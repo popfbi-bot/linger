@@ -163,6 +163,20 @@ class SQLiteRepository(Repository):
         rows = self.conn.execute("SELECT card FROM persona ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
         return [PersonaCard.model_validate(json.loads(r["card"])) for r in rows]
 
+    def find_persona_by_template(self, template_id: str) -> PersonaCard | None:
+        """按 provenance.template 找已实例化的模板人格。
+
+        扫表而不是加列：人格数量是「人」的量级（几十到几百），
+        一次全表解析 JSON 的开销远小于为它做一次 schema 迁移。
+        真到需要索引时再补 `template_id` 列与迁移脚本。
+        """
+        rows = self.conn.execute("SELECT card FROM persona ORDER BY created_at ASC").fetchall()
+        for r in rows:
+            card = PersonaCard.model_validate(json.loads(r["card"]))
+            if (card.provenance or {}).get("template") == template_id:
+                return card
+        return None
+
     # ---- 会话 ---------------------------------------------------------- #
     def save_session(self, s: Session) -> None:
         self.conn.execute(

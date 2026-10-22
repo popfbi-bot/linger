@@ -44,7 +44,9 @@ def load_template(template_id: str) -> PersonaCard:
     if not path.exists():
         raise FileNotFoundError(f"模板不存在: {template_id}")
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    # 模板本身不携带固定 id：每次实例化都应是一个新人格（否则多人共用同一份状态）
+    # 模板本身不携带固定 id：实例化时才生成。
+    # 幂等由 PersonaFactory.create() 靠 provenance.template 保证——
+    # 「共用人格会不会串状态」不成立：状态按 (persona_id, user_id) 隔离。
     data.pop("id", None)
     data.setdefault("provenance", {})
     data["provenance"].setdefault("type", "authored")

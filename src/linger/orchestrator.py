@@ -67,6 +67,22 @@ class PersonaFactory:
     """persona_id → 人格卡。P1 状态外置：人格是库里的一行，不是代码里的一个字面量。"""
 
     def create(self, template_id: str, repo: Repository | None = None) -> PersonaCard:
+        """从模板实例化人格（**幂等**）。
+
+        同一个模板只实例化一次，重复调用返回已存在的那一份。
+
+        为什么必须幂等：记忆/关系/情绪/陪伴档案都按 `(persona_id, user_id)` 存，
+        每次点模板都发新 id 会把同一个用户的记忆切碎到多个 id 下——
+        用户看到的现象是「刷新页面再点同一个角色，她就不记得我了」。
+
+        「共用同一份人格会不会串状态」这个担心不成立：状态本来就在 user 维度隔离，
+        共享人格卡只是共享「她是谁」，不是共享「你们之间发生了什么」。
+        """
+        if repo is not None:
+            existing = repo.find_persona_by_template(template_id)
+            if existing is not None:
+                return existing
+
         card = load_template(template_id)
         if repo is not None:
             repo.save_persona(card)

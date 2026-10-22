@@ -21,13 +21,35 @@
     scenarioBeats: {},    // beat id → goal，用于进度面板显示
     personaId: null,
     sessionId: null,
-    userId: "u_web",      // 浏览器端单用户；多用户时换成登录态
+    userId: ensureUserId(),   // 本机身份，localStorage 持久化（见 ensureUserId）
     personaName: "",
     busy: false,
     lastTurnId: null,
     streamEl: null,     // 当前正在流式写入的气泡
     streamText: "",
   };
+
+  /** 本机用户标识：localStorage 持久化。
+   *
+   * 为什么不能写死 "u_web"：后端所有状态（记忆 / 关系 / 情绪 / 陪伴档案）
+   * 都按 (persona_id, user_id) 存。写死意味着同一个服务上所有浏览器共用一份记忆——
+   * 谁都能读到别人的心事。而每次刷新换新 id 又会让用户「失忆」。
+   * 所以：第一次访问生成一个，之后一直用它。
+   */
+  function ensureUserId() {
+    const KEY = "linger.user_id";
+    try {
+      const saved = localStorage.getItem(KEY);
+      if (saved) return saved;
+      const id = "u_" + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem(KEY, id);
+      return id;
+    } catch (_) {
+      // 隐私模式 / 禁用 storage：退化成「本次会话内」的临时身份。
+      // 至少不会读到别人的记忆；代价是刷新后记忆看不到。
+      return "u_" + Math.random().toString(36).slice(2, 10);
+    }
+  }
 
   // ───────────────────────────── DOM ─────────────────────────────
 

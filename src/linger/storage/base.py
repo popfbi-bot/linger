@@ -34,6 +34,19 @@ class Repository(ABC):
     @abstractmethod
     def list_personas(self, limit: int = 50) -> list[PersonaCard]: ...
 
+    @abstractmethod
+    def find_persona_by_template(self, template_id: str) -> PersonaCard | None:
+        """按模板来源查找已实例化的人格；没有返回 None。
+
+        **为什么需要它**：模板实例化必须幂等。记忆按 `(persona_id, user_id)` 存，
+        每次点模板都新建一个人格 id，会把同一个用户的记忆切碎到多个 id 下——
+        表现为「刷新页面再点林汐，她就不记得你了」。对陪伴产品这是致命缺陷，
+        不是功能缺失。
+
+        判定依据是 `provenance.template`（`load_template` 本来就写了这个键）。
+        用户自建（一句话生成）的人格没有这个键，不会被误撞。
+        """
+
     # ---- 会话 ---------------------------------------------------------- #
     @abstractmethod
     def save_session(self, session: Session) -> None: ...
