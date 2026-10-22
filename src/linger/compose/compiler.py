@@ -143,6 +143,23 @@ def _memory_block(memories: list[MemoryNode], rel: RelationState, now: datetime)
     return "\n".join(lines)
 
 
+def _social_block(rel: RelationState, limit: int = 8) -> str:
+    """人际行为边界：从社会知识库注入「这个阶段什么该做、什么不该做」。
+
+    关系引擎只有数值（等级/亲密度），但 AI 需要知道——
+    「朋友阶段什么样的关心恰到好处、什么样的关心越界」。
+    这份知识来自 data/ 下的五份语料，由 social.knowledge 索引。
+    """
+    from ..social import get_knowledge, stage_for_level
+
+    stage = stage_for_level(rel.level)
+    try:
+        return get_knowledge().boundaries(stage, limit=limit)
+    except Exception:
+        # 语料缺失时优雅降级：不影响主链路
+        return ""
+
+
 def compose(
     card: PersonaCard,
     affect: AffectState,
@@ -155,14 +172,17 @@ def compose(
 ) -> ComposedPrompt:
     now = now or datetime.now(timezone.utc)
 
+    social_text = _social_block(relation)
     blocks = [
         Block("persona", _persona_block(card), cacheable=True),
         Block("constraints", _constraints_block(card), cacheable=True, cache_break_after=True),
         Block("relation", _relation_block(card, relation)),
+        Block("social", social_text) if social_text else None,
         Block("scenario", _scenario_block(scenario)),
         Block("affect", _affect_block(affect)),
         Block("memory", _memory_block(memories, relation, now)),
     ]
+    blocks = [b for b in blocks if b is not None]
 
     # 记忆块超预算时，从尾部（分数最低）裁掉
     mem_budget = int(budget_tokens * BUDGET["memory"])
