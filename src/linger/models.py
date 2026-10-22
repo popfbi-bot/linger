@@ -1,0 +1,276 @@
+"""领域模型 —— 四态引擎的唯一真相源。
+
+设计约束（docs/ARCHITECTURE.md §3.1.1）：
+    这里的每个字段都必须能被某个引擎读取，或者能被编译进 prompt。
+    不能被执行引擎消费的字段，不该存在于这里。
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:10]}"
+
+
+def clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+
+# --------------------------------------------------------------------------- #
+# 情绪（PAD 三维）
+# --------------------------------------------------------------------------- #
+
+
+class PAD(BaseModel):
+    """Pleasure / Arousal / Dominance。
+
+    P ∈ [-1, 1]，A ∈ [0, 1]，D ∈ [0, 1]。
+    用连续三维而不是离散标签，因为它需要能做数学运算（衰减、叠加、插值）。
+    """
+
+    pleasure: float = 0.25
+    arousal: float = 0.35
+    dominance: float = 0.40
+
+    def clamped(self) -> PAD:
+        return PAD(
+            pleasure=clamp(self.pleasure, -1.0, 1.0),
+            arousal=clamp(self.arousal, 0.0, 1.0),
+            dominance=clamp(self.dominance, 0.0, 1.0),
+        )
+
+    def distance(self, other: PAD) -> float:
+        return (
+            abs(self.pleasure - other.pleasure)
+            + abs(self.arousal - other.arousal)
+            + abs(self.dominance - other.dominance)
+        )
+
+
+class AffectState(BaseModel):
+    pad: PAD = Field(default_factory=PAD)
+    label: str = "中性"
+    updated_at: datetime = Field(default_factory=now_utc)
+
+
+class Impact(BaseModel):
+    """一次事件对情绪的冲击。salience = 这件事对"她"有多重要（0~1）。"""
+
+    kind: Literal["praise", "criticism", "neglect", "intimacy", "event"] = "event"
+    dp: float = 0.0
+    da: float = 0.0
+    dd: float = 0.0
+    salience: float = 0.5
+
+
+# --------------------------------------------------------------------------- #
+# 人格
+# --------------------------------------------------------------------------- #
+
+
+class BigFive(BaseModel):
+    openness: float = 0.5
+    conscientiousness: float = 0.5
+    extraversion: float = 0.5
+    agreeableness: float = 0.5
+    neuroticism: float = 0.5
+
+
+class Voice(BaseModel):
+    register: str = "口语、短句"
+    avg_sentence_len: list[int] = Field(default_factory=lambda: [8, 20])
+    emoji_rate: float = 0.2
+    emoji_set: list[str] = Field(default_factory=list)
+    verbal_tics: list[str] = Field(default_factory=list)
+    forbidden_phrases: list[str] = Field(default_factory=list)
+    punctuation_policy: str = ""
+    addressing_rules: dict[str, str] = Field(default_factory=dict)
+
+
+class Knowledge(BaseModel):
+    knows: list[str] = Field(default_factory=list)
+    knows_not: list[str] = Field(default_factory=list)
+    leak_policy: str = "被直接追问身份时承认，但不跳出人设情绪"
+
+
+class Sensitivity(BaseModel):
+    praise: float = 1.0
+    criticism: float = 1.0
+    neglect: float = 1.0
+    intimacy: float = 1.0
+
+
+class AffectConfig(BaseModel):
+    baseline: PAD = Field(default_factory=PAD)
+    sensitivity: Sensitivity = Field(default_factory=Sensitivity)
+
+
+class Initiative(BaseModel):
+    silence_tolerance_turns: int = 2
+    max_proactive_per_day: int = 2
+    proactive_topics: list[str] = Field(default_factory=list)
+    never_proactive_when: list[str] = Field(default_factory=list)
+
+
+class MemoryPolicy(BaseModel):
+    remember: list[str] = Field(default_factory=list)
+    forget: list[str] = Field(default_factory=list)
+    sensitivity: str = "normal"
+
+
+class PersonaMeta(BaseModel):
+    name: str
+    aliases: list[str] = Field(default_factory=list)
+    age: int | None = None
+    identity: str = ""
+    archetype: str = ""
+
+
+class PersonaCard(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("p"))
+    version: int = 1
+    meta: PersonaMeta
+    traits: BigFive = Field(default_factory=BigFive)
+    custom_traits: dict[str, float] = Field(default_factory=dict)
+    voice: Voice = Field(default_factory=Voice)
+    values: dict[str, Any] = Field(default_factory=dict)
+    knowledge: Knowledge = Field(default_factory=Knowledge)
+    affect: AffectConfig = Field(default_factory=AffectConfig)
+    initiative: Initiative = Field(default_factory=Initiative)
+    memory_policy: MemoryPolicy = Field(default_factory=MemoryPolicy)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def name(self) -> str:
+        return self.meta.name
+
+    def style_anchor(self) -> str:
+        """语体锚点：编译器把它放在 prompt 最前，作为可缓存前缀。"""
+        v = self.voice
+        lo, hi = v.avg_sentence_len
+        parts = [
+            f"你是{self.meta.name}"
+            + (f"，{self.meta.age} 岁" if self.meta.age else "")
+            + (f"，{self.meta.identity}" if self.meta.identity else "")
+            + "。",
+            f"你说话{v.register}，句子大约 {lo}~{hi} 个字。",
+        ]
+        if v.verbal_tics:
+            parts.append("你偶尔会说：" + "、".join(f"「{t}」" for t in v.verbal_tics) + "。")
+        if v.punctuation_policy:
+            parts.append(f"标点习惯：{v.punctuation_policy}。")
+        if v.forbidden_phrases:
+            parts.append("这些说法你不会用：" + "、".join(f"「{p}」" for p in v.forbidden_phrases) + "。")
+        if self.knowledge.knows_not:
+            parts.append(
+                "你不懂的领域：" + "、".join(self.knowledge.knows_not) + "。遇到就直接说不懂，别硬撑。"
+            )
+        if self.knowledge.leak_policy:
+            parts.append(self.knowledge.leak_policy + "。")
+        return "\n".join(parts)
+
+
+# --------------------------------------------------------------------------- #
+# 记忆
+# --------------------------------------------------------------------------- #
+
+SourceType = Literal["user_said", "ai_inferred", "system", "user_corrected"]
+
+
+class MemoryNode(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("m"))
+    persona_id: str
+    user_id: str
+    layer: int = 2  # 2 情景 / 3 语义 / 4 关系 / 5 程序
+    type: str = "event"
+    content: str
+    entities: list[str] = Field(default_factory=list)
+    importance: float = 0.5
+    strength: float = 1.0
+    recall_count: int = 0
+    mention_count: int = 1
+    emotion: dict[str, float] = Field(default_factory=dict)
+    source_type: SourceType = "user_said"
+    source_turn_ids: list[int] = Field(default_factory=list)
+    confidence: float = 0.9
+    status: str = "active"  # active | superseded | archived
+    pinned: bool = False
+    created_at: datetime = Field(default_factory=now_utc)
+    last_recalled_at: datetime | None = None
+    embedding: list[float] | None = None
+
+    @property
+    def is_inferred(self) -> bool:
+        return self.source_type == "ai_inferred"
+
+
+# --------------------------------------------------------------------------- #
+# 关系
+# --------------------------------------------------------------------------- #
+
+
+class RelationState(BaseModel):
+    persona_id: str
+    user_id: str
+    level: int = 0
+    intimacy: float = 0.0
+    active_days: int = 0
+    turns: int = 0
+    deep_turns: int = 0
+    resonance_events: int = 0
+    self_disclosure: int = 0
+    unresolved_conflicts: int = 0
+    first_met_at: datetime = Field(default_factory=now_utc)
+    level_up_at: datetime | None = None
+
+
+# --------------------------------------------------------------------------- #
+# 会话
+# --------------------------------------------------------------------------- #
+
+
+class Turn(BaseModel):
+    id: int = 0
+    session_id: str
+    role: Literal["user", "assistant", "system"]
+    content: str
+    affect_snapshot: dict[str, float] | None = None
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class Session(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("s"))
+    persona_id: str
+    user_id: str
+    scenario_id: str | None = None
+    started_at: datetime = Field(default_factory=now_utc)
+    last_active_at: datetime = Field(default_factory=now_utc)
+
+
+class TraceRecord(BaseModel):
+    """单轮回溯。没有它，记忆系统就是黑箱（见 §5.4）。"""
+
+    turn_id: int
+    persona_id: str
+    user_id: str
+    query: str
+    candidates: int = 0
+    passed_gate: int = 0
+    selected: list[dict[str, Any]] = Field(default_factory=list)
+    affect_before: dict[str, float] = Field(default_factory=dict)
+    affect_after: dict[str, float] = Field(default_factory=dict)
+    impacts: list[dict[str, Any]] = Field(default_factory=list)
+    relation: dict[str, Any] = Field(default_factory=dict)
+    tokens_by_block: dict[str, int] = Field(default_factory=dict)
+    prompt: str = ""
+    created_at: datetime = Field(default_factory=now_utc)
