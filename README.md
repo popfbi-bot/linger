@@ -12,7 +12,7 @@
 
 大多数「AI 角色扮演」是**每轮失忆**的：换个会话人格就丢了，说话没分寸，情绪永远不变，关系永远停在原地。
 
-Linger 用四个状态引擎解决这件事：
+Linger 用五个状态引擎解决这件事：
 
 | 引擎 | 回答的问题 | 存在哪 |
 |---|---|---|
@@ -20,6 +20,10 @@ Linger 用四个状态引擎解决这件事：
 | **情绪** PAD 状态机 | 「她此刻什么心情」 | 连续状态，每轮演化 |
 | **关系** RelationState | 「我们是什么关系、到哪一步了」 | 等级 + 亲密度 + 未消解冲突 |
 | **记忆** 六层模型 | 「她记得什么」 | L2~L5 分层，带来源标注 |
+| **陪伴档案** CompanionProfile | 「你知道我是谁吗」 | 人生阶段 + 关系角色 + 需求 + 风险 |
+
+最后这层是 M2 加的。前四层是「她这会儿的状态」，陪伴档案是「**她对你的了解**」——
+换个会话也不丢，用户还能手动校正（「其实我是青年期」）。
 
 再加上**人际知识库**（七份语料，1500+ 条结构化知识）和**场景运行时**（结构化剧本 + 节拍推进）。
 
@@ -52,7 +56,7 @@ python examples/serve.py
 ### 跑测试
 
 ```bash
-python -m pytest        # 163 passed
+python -m pytest        # 222 passed
 ```
 
 ### 命令行演示
@@ -130,6 +134,8 @@ python examples/demo_toxic.py   # 有毒关系信号 + 关系角色识别
 | GET | `/v1/sessions/{id}/memories/export` | 记忆导出 |
 | DELETE | `/v1/memories/{id}` | 删除记忆 |
 | GET | `/v1/traces/{turn_id}` | 单轮回溯 |
+| GET | `/v1/companion/{persona_id}/{user_id}` | 陪伴档案（不存在返回空档案，非 404） |
+| PATCH | `/v1/companion/{persona_id}/{user_id}` | 手动校正人生阶段 |
 | GET | `/` | 静态前端首页（不在 OpenAPI schema 中） |
 
 ### SSE 事件序列
@@ -156,6 +162,7 @@ src/linger/
 ├── relation/         # 关系引擎：等级门槛、tick、称呼与边界
 ├── memory/           # 六层记忆：提取 / 去重 / 检索 / 嵌入
 ├── social/           # 人际知识库（七份语料）+ 三个检测器 + 角色图谱
+├── companion/        # 陪伴档案：阶段识别 + 需求/风险汇总 + 档案更新
 ├── scenario/         # 场景运行时：Beat / Scenario / 进度持久化
 ├── compose/          # Prompt 编译器（分层块 + 预算 + 缓存边界）
 ├── server/           # FastAPI 服务 + 静态前端
@@ -168,10 +175,11 @@ src/linger/
 拼接顺序必须「**稳定 → 动态**」，同一人格的所有用户共享前缀缓存，成本可降 50~70%：
 
 ```
-persona → constraints → ai_boundaries ⟂ → relation → social → scenario → affect → roles → memory
+persona → constraints → ai_boundaries ⟂ → relation → social → scenario → affect → roles → companion → memory
 ```
 
-`⟂` 是缓存断点。顺序变更需评审。
+`⟂` 是缓存断点。断点之前是**稳定前缀**（同一人格的所有用户共享），之后是动态块。
+顺序变更需评审。
 
 ---
 
@@ -182,8 +190,8 @@ persona → constraints → ai_boundaries ⟂ → relation → social → scenar
 | M0 | ✅ | 骨架 + orchestrator + 事件契约 |
 | M1 | ✅ | HTTP 服务层 + SSE 流式 + 记忆管理与 trace 回溯 |
 | M1.5 | ✅ | 前端界面 + 场景运行时 |
-| M2-A | 🚧 | **陪伴档案**：人生阶段 + 关系角色 + 陪伴需求 + 有毒风险，持久化并注入 prompt |
-| M2-B | ⏳ | 前端陪伴档案面板（让用户看得见「她记得我是谁」） |
+| M2-A | ✅ | **陪伴档案**：人生阶段 + 关系角色 + 陪伴需求 + 有毒风险，持久化并注入 prompt |
+| M2-B | ✅ | 前端陪伴档案面板（让用户看得见「她记得我是谁」，并可手动校正） |
 | M2-C | ⏳ | 记忆管理前端（可编辑记忆） |
 | 后续 | ⏳ | 多人格 / 多用户登录态、场景 YAML 可视化编辑 |
 

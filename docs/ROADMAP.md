@@ -22,11 +22,21 @@
   `dynamics`（戏剧三角、追逃锁死、内在小孩等关系剧本）/ `detect`（文本识别）；
   Orchestrator 把识别结果放进 `done` 事件的 `state.roles`，编译器新增 `roles` 块注入互补角色；
   **只识别，不惩罚**——绝不进入 `unresolved_conflicts`。全量 **163 passed**（+21）
-- 🚧 **M2 已拆解并启动**（见下方「M2 验收清单」）：
-  1. **M2-A 陪伴档案**：人生阶段 + 关系角色 + 陪伴需求 + 有毒风险，持久化并注入 prompt —— **已派工给 NPC**
-  2. **M2-B 前端陪伴档案面板**：让用户看得见「她记得我是谁」，并可手动校正阶段 —— 待 M2-A 交付
-  3. **M2-C 记忆管理前端**：`PATCH /v1/memories/{id}` 还没接界面 —— 后续
-  4. 多人格 / 多用户登录态、场景 YAML 可视化编辑 —— 后续
+- ✅ **M2-A 完成**（NPC 交付 PR #12，squash sha `4328625`，issue #11 已关闭留痕）：
+  陪伴档案 `CompanionProfile`（模型 + `companion_profile` 表 + 抽象/实现成对）+
+  `src/linger/companion/profile.py`（8 阶段确定性识别、需求取自语料、风险取自 toxic 信号）+
+  编译器 `companion` 块（空档案不注入、排在缓存断点之后）+
+  `GET/PATCH /v1/companion/{persona_id}/{user_id}`；
+  **经独立验收**——自行复现三条「改坏→红」，并独立复验端点行为；
+  全量 **222 passed**，干净克隆同样通过
+- ✅ **M2-B 完成**（commit `1b5a8cb`）：前端陪伴档案面板——阶段可手动校正、
+  角色/需求/风险分色标签、空态引导文案、`done` 后自动刷新；新增 15 个前端测试
+- ✅ **README 补齐**（commit `6b38672`）：修复 `pyproject.toml` 声明 `readme = "README.md"`
+  但文件缺失导致 **`pip install .` 失败**的构建缺陷
+- 🚧 **下一步（M2-C 及后续）**：
+  1. **M2-C 记忆管理前端**：`PATCH /v1/memories/{id}` 还没接界面
+  2. **issue #13**：`SocialKnowledge.companion_profiles()` 恒返回空列表（P3，已登记待派工）
+  3. 多人格 / 多用户登录态、场景 YAML 可视化编辑 —— 后续
 
 ## M2 验收清单（陪伴档案）
 
@@ -40,30 +50,67 @@
 **为什么需要它**：现在 AI 每轮都能靠 `roles` 块临时推断用户的处境，但这层推断**不持久**——
 换个会话就没了。陪伴档案把「用户是谁」变成可存储、可查看、可由用户校正的状态。
 
-- [ ] 新增 `CompanionProfile` 模型（`src/linger/models.py`）：字段含
+- [x] 新增 `CompanionProfile` 模型（`src/linger/models.py`）：字段含
       `persona_id` / `user_id` / `life_stage` / `roles` / `needs` / `risks` / `updated_at`
-- [ ] 新增 `companion_profile` 存储表 + Repository 抽象方法
+- [x] 新增 `companion_profile` 存储表 + Repository 抽象方法
       `save_companion_profile` / `get_companion_profile`
       （**必须同步改 `storage/base.py` 与 `storage/sqlite.py`**，抽象与实现成对）
-- [ ] 人生阶段识别：从用户话语中识别 8 个阶段（胎儿期/婴儿期/幼儿期/童年期/青春期/青年期/中期年/老年期）
-- [ ] 陪伴需求：按 `life_stage` 从 `SocialKnowledge.companion_pitfalls()` 取该阶段的陪伴需求
-- [ ] 有毒风险：按 `SocialKnowledge.toxic_relation_items()` 汇总当前关系中的风险类型
-- [ ] 每轮对话结束后**更新档案**（与写记忆同一时机：回复落库之后）
-- [ ] 编译器新增 `companion` 块，把档案注入 prompt（档案为空时**不注入**，不破坏前缀缓存）
-- [ ] `GET /v1/companion/{persona_id}/{user_id}` 返回档案；不存在返回**空档案**而不是 404
+- [x] 人生阶段识别：从用户话语中识别 8 个阶段（胎儿期/婴儿期/幼儿期/童年期/青春期/青年期/中期年/老年期）
+- [x] 陪伴需求：按 `life_stage` 从 `SocialKnowledge.companion_pitfalls()` 取该阶段的陪伴需求
+- [x] 有毒风险：按 `SocialKnowledge.toxic_relation_items()` 汇总当前关系中的风险类型
+- [x] 每轮对话结束后**更新档案**（与写记忆同一时机：回复落库之后）
+- [x] 编译器新增 `companion` 块，把档案注入 prompt（档案为空时**不注入**，不破坏前缀缓存）
+- [x] `GET /v1/companion/{persona_id}/{user_id}` 返回档案；不存在返回**空档案**而不是 404
       （档案是可选状态，不存在是常态）
-- [ ] `PATCH /v1/companion/{persona_id}/{user_id}` 允许**用户手动校正** `life_stage`
-- [ ] 档案内容**绝不进入 `unresolved_conflicts`**（识别不是惩罚）
-- [ ] 新增 `tests/test_companion.py`，测试数 > 163
-- [ ] `python -m pytest` 全绿
+- [x] `PATCH /v1/companion/{persona_id}/{user_id}` 允许**用户手动校正** `life_stage`
+- [x] 档案内容**绝不进入 `unresolved_conflicts`**（识别不是惩罚）
+- [x] 新增 `tests/test_companion.py`，测试数 > 163
+- [x] `python -m pytest` 全绿
+- [x] **贴红→绿对比**：判据能被证明「不满足会红」
+
+> **M2-A 状态（2026-10-22 完成，PR #12，squash sha `4328625`）**：11 条全部通过，
+> 全量 **222 passed**（163 + 44 新增 + 15 前端），**干净克隆同样 222 passed**。
+>
+> **独立验收（不采信自述，本窗口自行复现三条「改坏→红」）**：
+> 1. 把 `update_companion_profile` 提前到 LLM 流式之前
+>    → `test_13_profile_updated_after_reply_committed` 红（序列 `turn:user, profile, turn:assistant`）
+> 2. 把「刚结婚」从青年期挪到中年期
+>    → `test_05_detect_life_stage[我刚结婚-青年期]` 红
+> 3. 让 toxic 信号进 `conflict`
+>    → `test_26_toxic_conversation_does_not_penalize_relation` 红
+>
+> **端点独立复验**：`GET` 不存在档案 → 200 + `is_empty:true`（非 404）；
+> `PATCH {"life_stage":"青少年期"}` → 422；`PATCH {"life_stage":"中年期"}` → 200 且
+> `needs` 换成中年期语料原文（证明来自语料而非硬编码）。
+>
+> **实现上的两个好设计**（值得留着）：
+> - 阶段识别带**虚构语境降噪**：「电影里主角退休了」不算用户自己的处境；
+> - 阶段为空时**不给通用需求**（`generic=False`）——通用需求是胎儿期那批条目，
+>   对空档案毫无信息量，却会让档案由空变非空、白白顶掉前缀缓存。
+>
+> **遗留**：NPC 发现既有缺陷 `SocialKnowledge.companion_profiles()` 恒返回空列表
+> （section 过滤条件与语料实际标题对不上）。它**没有偷偷改既有语义**，
+> 而是新增只读查询 `positive_demands()` 作回退并建议单独开 issue →
+> 已登记 **issue #13**（P3，待排期）。
 
 ### M2-B 前端陪伴档案面板
 
-- [ ] 页面新增可见区块「陪伴档案」，显示阶段 / 角色 / 需求 / 风险
-- [ ] 档案为空时有引导文案（不是空白面板）
-- [ ] 用户可手动修改人生阶段并保存（调 `PATCH`）
-- [ ] 面板在 `done` 事件后自动刷新
-- [ ] 无 CDN 依赖（延续 M1.5 纪律）
+- [x] 页面新增可见区块「陪伴档案」，显示阶段 / 角色 / 需求 / 风险
+- [x] 档案为空时有引导文案（不是空白面板）
+- [x] 用户可手动修改人生阶段并保存（调 `PATCH`）
+- [x] 面板在 `done` 事件后自动刷新
+- [x] 无 CDN 依赖（延续 M1.5 纪律）
+
+> **M2-B 状态（2026-10-22 完成，commit `1b5a8cb`）**：5 条全部通过，
+> 新增 `tests/test_companion_frontend.py`（15 例），全量 **178 passed**（合并 M2-A 后 222）。
+> 阶段下拉的 8 个选项与后端 `LIFE_STAGES` **逐项比对**（列表漂移会红）——
+> 后端 API 响应里带 `life_stages` 字段，可直接作为契约来源。
+>
+> **写测试时踩的判据错位**：`test_render_companion_escapes_html` 一开始查
+> `renderCompanion` 函数体里的 `escapeHtml`，红了。查下去发现转义其实发生在
+> `renderTags`（真正拼 `innerHTML` 的地方），`renderCompanion` 只负责分发。
+> ⇒ **判据要钉在真正拼 DOM 的那一层**，不是「看起来相关」的函数。
+> 这是判据自身的问题，改判据而不是改实现。
 
 ### M2-C 记忆管理前端
 
