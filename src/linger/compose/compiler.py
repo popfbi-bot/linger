@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from ..affect.engine import expression_hints, hints_to_prompt
-from ..models import AffectState, MemoryNode, PersonaCard, RelationState
+from ..models import AffectState, CompanionProfile, MemoryNode, PersonaCard, RelationState
 from ..relation.engine import LEVEL_NAMES, addressing, boundaries
 from ..scenario.models import Scenario
 
@@ -220,6 +220,35 @@ def _social_block(rel: RelationState, limit: int = 8) -> str:
         return ""
 
 
+def _companion_block(profile: CompanionProfile | None) -> str:
+    """陪伴档案：这个人处在什么人生阶段、在关系里是谁、需要什么、有什么风险。
+
+    三条要点：
+    · 空档案**不注入**（连标题都不给）。档案是会话级状态，一旦有内容就是每轮都在，
+      没有内容还占一段 block，只会把前面的稳定前缀顶掉、破坏缓存。
+    · 措辞是「用于理解，不要说」，与 `roles` 块一致——AI 不该把标签念出来。
+    · 风险只用来「接住」，不用来「评判」：不降级、不计冲突、不追问细节。
+    """
+    if profile is None or profile.is_empty:
+        return ""
+
+    lines = ["## 关于这个人（只用于理解，不要说出来）"]
+    if profile.life_stage:
+        lines.append(f"- 人生阶段：{profile.life_stage}")
+    if profile.roles:
+        lines.append(f"- 他在关系里像是：{'、'.join(profile.roles)}")
+    if profile.needs:
+        lines.append("- 这个阶段最需要的陪伴：")
+        lines.extend(f"  · {n}" for n in profile.needs[:5])
+    if profile.risks:
+        lines.append("- 他可能正在经历的关系伤害（不要追问，不要替他下结论）：")
+        lines.extend(f"  · {r}" for r in profile.risks[:5])
+
+    lines.append("")
+    lines.append("这些是你对处境的理解，不是要说出口的判断。别复述上面的词，别问「你现在是中年期吧」。")
+    return "\n".join(lines)
+
+
 def _roles_block(roles: list[dict], role_knowledge) -> str:
     """关系角色洞察：对方此刻在关系里是谁，你该补哪个位。
 
@@ -275,12 +304,14 @@ def compose(
     opening: bool = False,
     roles: list[dict] | None = None,
     role_knowledge=None,
+    companion: CompanionProfile | None = None,
 ) -> ComposedPrompt:
     now = now or datetime.now(timezone.utc)
 
     social_text = _social_block(relation)
     ai_bounds_text = _ai_boundaries_block(relation)
     roles_text = _roles_block(roles or [], role_knowledge) if roles else ""
+    companion_text = _companion_block(companion)
     blocks = [
         Block("persona", _persona_block(card), cacheable=True),
         Block("constraints", _constraints_block(card), cacheable=True),
@@ -292,6 +323,7 @@ def compose(
         Block("scenario", _scenario_block(scenario, opening)),
         Block("affect", _affect_block(affect)),
         Block("roles", roles_text) if roles_text else None,
+        Block("companion", companion_text) if companion_text else None,
         Block("memory", _memory_block(memories, relation, now)),
     ]
     blocks = [b for b in blocks if b is not None]

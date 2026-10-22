@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .affect.engine import expression_hints, step
 from .affect.evaluator import evaluate, is_deep_turn, is_self_disclosure
+from .companion import update_profile as update_companion_profile
 from .compose.compiler import compose, estimate_tokens
 from .config import settings
 from .memory.embedding import Embedder, cosine
@@ -218,6 +219,17 @@ class Orchestrator:
         )
         self.memory_writer(session, persona, [user_turn])
 
+        # 陪伴档案：与写记忆同一时机（回复落库之后）。提前写就等于
+        # 「用户还没被回应，系统先给他贴了标签」——这是 §3.3.3 禁令的同一条。
+        companion = update_companion_profile(
+            self.repo,
+            persona.id,
+            session.user_id,
+            content,
+            detected_roles=state.roles,
+            toxic_signals=state.toxic_signals,
+        )
+
         # 节拍推进：与写记忆同一时机（回复落库之后）。绝不提前——
         # 否则用户还没说的话就能推进剧情。
         scenario_state = self._advance_scenario(session, scenario, content)
@@ -251,6 +263,7 @@ class Orchestrator:
                 "red_flags": state.red_flags,
                 "toxic_signals": state.toxic_signals,
                 "roles": state.roles,
+                "companion": companion.model_dump(mode="json"),
                 "scenario": scenario_state,
             },
             usage=usage,
@@ -312,6 +325,7 @@ class Orchestrator:
             opening=opening,
             roles=roles,
             role_knowledge=self.role_knowledge,
+            companion=self.repo.get_companion_profile(persona.id, session.user_id),
         )
 
         state = _StateSnapshot(

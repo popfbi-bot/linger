@@ -36,9 +36,11 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+from ..companion import LIFE_STAGES, correct_life_stage, life_stage_valid
 from ..config import settings
 from ..llm import get_provider
 from ..memory.embedding import get_embedder
+from ..models import CompanionProfile
 from ..orchestrator import Orchestrator
 from ..storage.base import Repository
 from ..storage.sqlite import SQLiteRepository
@@ -101,6 +103,26 @@ class SendMessageRequest(BaseModel):
         return v
 
 
+class CorrectLifeStageRequest(BaseModel):
+    """用户手动校正人生阶段。
+
+    只开放 `life_stage` 一个字段：roles/needs/risks 是识别结果，
+    让用户改它们就等于让用户给自己贴标签——那不是校正，是伪装。
+    """
+
+    life_stage: str = Field(..., min_length=1, description="胎儿期/婴儿期/…/老年期")
+
+    @field_validator("life_stage")
+    @classmethod
+    def _valid_stage(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("life_stage 不能为空白")
+        if not life_stage_valid(v):
+            raise ValueError(f"未知的人生阶段: {v}（可选：{'、'.join(LIFE_STAGES)}）")
+        return v
+
+
 # --------------------------------------------------------------------------- #
 # 序列化
 # --------------------------------------------------------------------------- #
@@ -130,6 +152,20 @@ def _memory_brief(node) -> dict[str, Any]:
         "status": node.status,
         "pinned": node.pinned,
         "created_at": node.created_at.isoformat(),
+    }
+
+
+def _companion_detail(profile) -> dict[str, Any]:
+    """档案序列化。空档案也走这里——不存在与空是同一件事（可选状态）。"""
+    return {
+        "persona_id": profile.persona_id,
+        "user_id": profile.user_id,
+        "life_stage": profile.life_stage,
+        "roles": list(profile.roles),
+        "needs": list(profile.needs),
+        "risks": list(profile.risks),
+        "is_empty": profile.is_empty,
+        "updated_at": profile.updated_at.isoformat(),
     }
 
 
@@ -233,7 +269,7 @@ def create_app(
     app = FastAPI(
         title="Linger",
         version="0.1.0",
-        description="AI 陪伴人格引擎的 HTTP 服务层：SSE 流式对话 + 记忆管理 + trace 回溯",
+        description="AI 陪伴人格引擎的 HTTP 服务层：SSE 流式对话 + 记忆管理 + 陪伴档案 + trace 回溯",
         lifespan=lifespan,
     )
 
@@ -452,6 +488,36 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"记忆不存在: {memory_id}")
         repo.delete_memory(memory_id)
         return {"deleted": memory_id, "content": target.content}
+
+    # ------------------------------------------------------------------ #
+    # 陪伴档案（M2-A）
+    # ------------------------------------------------------------------ #
+    @app.get("/v1/companion/{persona_id}/{user_id}")
+    def get_companion(
+        persona_id: str,
+        user_id: str,
+        repo: Repository = Depends(get_repo),
+    ) -> dict[str, Any]:
+        """返回档案。不存在时返回**空档案**（200），不是 404。
+
+        档案是可选状态：「还没有」是常态，不是错误。
+        客户端拿到 `is_empty: true` 就该显示引导文案，而不是报错页。
+        """
+        profile = repo.get_companion_profile(persona_id, user_id) or CompanionProfile(
+            persona_id=persona_id, user_id=user_id
+        )
+        return {**_companion_detail(profile), "life_stages": list(LIFE_STAGES)}
+
+    @app.patch("/v1/companion/{persona_id}/{user_id}")
+    def patch_companion(
+        persona_id: str,
+        user_id: str,
+        body: CorrectLifeStageRequest,
+        repo: Repository = Depends(get_repo),
+    ) -> dict[str, Any]:
+        """用户手动校正人生阶段。非法阶段值由请求体校验挡成 422。"""
+        profile = correct_life_stage(repo, persona_id, user_id, body.life_stage)
+        return {**_companion_detail(profile), "life_stages": list(LIFE_STAGES)}
 
     # ------------------------------------------------------------------ #
     # trace 回溯

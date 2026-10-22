@@ -13,7 +13,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..models import PAD, AffectState, MemoryNode, PersonaCard, RelationState, Session, TraceRecord, Turn
+from ..models import (
+    PAD,
+    AffectState,
+    CompanionProfile,
+    MemoryNode,
+    PersonaCard,
+    RelationState,
+    Session,
+    TraceRecord,
+    Turn,
+)
 from .base import Repository
 
 _SCHEMA = """
@@ -74,6 +84,14 @@ CREATE TABLE IF NOT EXISTS scenario_progress (
   session_id TEXT PRIMARY KEY,
   payload TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS companion_profile (
+  persona_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  life_stage TEXT NOT NULL DEFAULT '',
+  roles TEXT, needs TEXT, risks TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (persona_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS trace (
   turn_id INTEGER PRIMARY KEY,
@@ -306,6 +324,34 @@ class SQLiteRepository(Repository):
             "SELECT payload FROM scenario_progress WHERE session_id=?", (session_id,)
         ).fetchone()
         return None if row is None else json.loads(row["payload"])
+
+    # ---- 陪伴档案 ------------------------------------------------------ #
+    def save_companion_profile(self, p: CompanionProfile) -> None:
+        self.conn.execute(
+            "INSERT INTO companion_profile (persona_id,user_id,life_stage,roles,needs,risks,updated_at) "
+            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(persona_id,user_id) DO UPDATE SET "
+            "life_stage=excluded.life_stage, roles=excluded.roles, needs=excluded.needs, "
+            "risks=excluded.risks, updated_at=excluded.updated_at",
+            (p.persona_id, p.user_id, p.life_stage, _j(p.roles), _j(p.needs), _j(p.risks),
+             _dt(p.updated_at)),
+        )
+        self.conn.commit()
+
+    def get_companion_profile(self, persona_id: str, user_id: str) -> CompanionProfile | None:
+        row = self.conn.execute(
+            "SELECT * FROM companion_profile WHERE persona_id=? AND user_id=?", (persona_id, user_id)
+        ).fetchone()
+        if row is None:
+            return None
+        return CompanionProfile(
+            persona_id=row["persona_id"],
+            user_id=row["user_id"],
+            life_stage=row["life_stage"] or "",
+            roles=_pj(row["roles"], []),
+            needs=_pj(row["needs"], []),
+            risks=_pj(row["risks"], []),
+            updated_at=_pd(row["updated_at"]) or datetime.now(timezone.utc),
+        )
 
     # ---- 回溯 ---------------------------------------------------------- #
     def save_trace(self, trace: TraceRecord) -> None:

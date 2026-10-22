@@ -210,6 +210,18 @@ class SocialKnowledge:
                 items = [i for i in self.items if i.dimension == "companion_negative" and i.toxic]
         return [i.text for i in items][:limit]
 
+    def positive_demands(self, life_stage: str | None = None, limit: int = 400) -> list[str]:
+        """「人生各阶段陪伴需求」的正面条目（上篇，polarity="companion"）。
+
+        与 `companion_pitfalls()` 正好是一对：那边是「陪伴缺失会怎样」，
+        这边是「该被怎么陪伴」。两处共用同一套人生阶段标题（`一、胎儿期（出生前）`），
+        但 `companion_pitfalls` 只索引了负面语料，所以正面需求要单独按标题前缀取。
+        """
+        items = [i for i in self.by_stage("陪伴") if i.polarity == "companion"]
+        if life_stage:
+            items = [i for i in items if life_stage in i.section]
+        return [i.text for i in items][:limit]
+
     def toxic_relation_types(self) -> list[str]:
         """下篇的有毒关系类型清单（亲情/友情/职场/亲密/其他）。"""
         return list(dict.fromkeys(

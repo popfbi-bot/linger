@@ -10,7 +10,16 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from ..models import AffectState, MemoryNode, PersonaCard, RelationState, Session, TraceRecord, Turn
+from ..models import (
+    AffectState,
+    CompanionProfile,
+    MemoryNode,
+    PersonaCard,
+    RelationState,
+    Session,
+    TraceRecord,
+    Turn,
+)
 
 
 class Repository(ABC):
@@ -91,6 +100,23 @@ class Repository(ABC):
     @abstractmethod
     def get_scenario_progress(self, session_id: str) -> dict | None:
         """读回场景进度；没有记录返回 None（= 所有节拍都还没走）。"""
+
+    # ---- 陪伴档案（M2-A） ---------------------------------------------- #
+    @abstractmethod
+    def save_companion_profile(self, profile: CompanionProfile) -> None:
+        """写入陪伴档案（主键：persona_id + user_id，整体覆盖）。
+
+        档案是「当前认知」而不是流水账：识别结果变了就整体替换，
+        不需要保留中间态——历史在 turn 与 trace 里，这里只存结论。
+        """
+
+    @abstractmethod
+    def get_companion_profile(self, persona_id: str, user_id: str) -> CompanionProfile | None:
+        """读回陪伴档案；没有记录返回 None。
+
+        None 是常态（新用户、纯闲聊），调用方要能空手走开：
+        HTTP 层返回空档案而不是 404，编译器直接跳过注入。
+        """
 
     # ---- 回溯 ---------------------------------------------------------- #
     @abstractmethod

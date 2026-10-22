@@ -274,3 +274,36 @@ class TraceRecord(BaseModel):
     tokens_by_block: dict[str, int] = Field(default_factory=dict)
     prompt: str = ""
     created_at: datetime = Field(default_factory=now_utc)
+
+
+# --------------------------------------------------------------------------- #
+# 陪伴档案（M2-A）
+# --------------------------------------------------------------------------- #
+
+
+class CompanionProfile(BaseModel):
+    """「用户是谁」的持久化投影。
+
+    每轮的 `roles` / `toxic_signals` 只是当轮的临时推断，换个会话就没了。
+    陪伴档案把它们（以及人生阶段）落成状态：可存储、可查看、可由用户校正。
+
+    铁律：档案只用于**理解**对方，不用于评价对方——
+    它的任何字段都不允许进入 `RelationState.unresolved_conflicts`。
+    """
+
+    persona_id: str
+    user_id: str
+    # 胎儿期/婴儿期/幼儿期/童年期/青春期/青年期/中年期/老年期；"" = 未确定
+    life_stage: str = ""
+    roles: list[str] = Field(default_factory=list)
+    needs: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=now_utc)
+
+    @property
+    def is_empty(self) -> bool:
+        """空档案：什么都没识别出来。
+
+        编译器据此跳过 `companion` 块，保持 prompt 前缀稳定（§3.6 缓存纪律）。
+        """
+        return not (self.life_stage or self.roles or self.needs or self.risks)
