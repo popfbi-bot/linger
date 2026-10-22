@@ -1,0 +1,53 @@
+# Linger M0 路线图与验收清单
+
+> 目的：钉住「可运行」的验收判据，避免"写了文档但从不验证"。
+> 每个里程碑必须能独立演示，且验收标准**能被证明会失败**（见 story-os 纪律「判据要能证明会失败」）。
+
+## 当前状态（2026-10-22）
+
+- ✅ 骨架已推送 main（commit `1c60583`）
+- 🚧 Issue #1 已派工给 CodeBuddy：补 `orchestrator` + 事件类型 + 演示 + 测试
+- ⬜ 以下为验收清单，逐项勾选
+
+## 验收清单（M0「能跑通一轮」）
+
+### 代码存在性（可从文件系统验证）
+
+- [ ] `src/linger/orchestrator.py` 存在
+- [ ] `src/linger/server/__init__.py` 存在，定义 `ServerEvent`（type 含 thinking/affect/delta/done）
+- [ ] `examples/demo.py` 存在
+- [ ] `tests/` 目录存在
+
+### 可运行性（可从命令行验证）
+
+- [ ] `python examples/demo.py` 退出码为 0，打印完整链路（3 轮对话 + 情绪 + 关系 + 记忆条数 + trace）
+- [ ] `python -m pytest` 退出码为 0，且测试数 > 0
+- [ ] 免密钥可跑（默认 `LINGER_LLM=mock`，不需要任何 API key）
+
+### 行为正确性（关键设计约束，必须有测试钉住）
+
+- [ ] 记忆写入发生在回复落库**之后**（禁止同轮写记忆）
+- [ ] 低于相关性闸门的记忆**不会**进入注入
+- [ ] 记忆检索与状态更新**并发**执行（不是串行）
+- [ ] `send_message` 返回事件流（thinking/affect/delta/done）
+- [ ] 编译后的 system prompt 包含人格锚点（`你是林汐`）
+
+### 范围不越界（用 git diff 验证）
+
+- [ ] 未修改 `models.py` / `storage/base.py` / `config.py` / `docs/ARCHITECTURE.md`
+- [ ] 未修改 `pyproject.toml` 的 `[project]` 元数据
+- [ ] 未引入新的第三方依赖（或只在 optional-dependencies 里加）
+
+## 评审 NPC 交付时的动作
+
+1. `git fetch origin` 拉取 PR 分支
+2. 本地 `git checkout` 该分支，独立跑 `python examples/demo.py` 和 `python -m pytest`
+3. 用 `git diff --stat origin/main <pr-branch>` 核对改动范围
+4. 对照本清单逐项勾选；**不满足任何一项则打回**
+5. 只有全部通过，才 `merge-pull` 并关闭 issue
+
+## 下一个里程碑（M0 完成后）
+
+- M1：SSE HTTP 服务（`src/linger/server/app.py`），把 `send_message` 暴露为 `/v1/sessions/{id}/messages`
+- M1：记忆管理 API（看/改/删/导出），trace 回溯接口 `/v1/traces/{turn_id}`
+- M1：情绪可视化事件（前端头像/气泡跟随情绪）
