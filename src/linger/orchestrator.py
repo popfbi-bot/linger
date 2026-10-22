@@ -6,6 +6,10 @@
              ├─(并行)→ Prompt 编译 → LLM 流式 → 回复落库 → 写记忆 → trace
     状态更新 ┘
 
+场景运行时（M1.5）：`session.scenario_id` 是场景 **id**（不是文本）。
+每轮开始读出未完成节拍交给编译器，回复落库之后才按关键词推进并持久化——
+和记忆写入同一时机，绝不提前（否则用户一句没说的话也能推进剧情）。
+
 三条硬约束（每条都对应一个已知的坑）：
     · 只注入通过相关性闸门的记忆（坑 #8 检索反噬）。
     · 记忆检索与状态更新并行，且并行任务之间不共享可变状态（mutate 只发生在召回之后）。
@@ -37,11 +41,20 @@ from .models import (
 )
 from .persona.templates import load_template
 from .relation.engine import tick
+from .scenario import Scenario, load_scenario
 from .server import ServerEvent
 from .social.redflag import RedFlagDetector, ToxicSignalDetector, get_detector, get_toxic_detector
 from .storage.base import Repository
 
 ENTITY_PATTERN = re.compile(r"[\u4e00-\u9fff]{0,6}(公司|医院|书店|学校)")
+
+# 场景 id 的形态：字母数字下划线，且不含空格与中文标点。
+# 用来区分「场景 id」与「一段自由设定的场景文本」（M1 老写法）。
+_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]+$")
+
+
+def _looks_like_id(value: str) -> bool:
+    return bool(_ID_PATTERN.match(value.strip()))
 
 # 写记忆的实现可替换（例如带冲突消解 / 小模型提炼的管线）。
 # 约定：只接收已经落库的用户轮次，且只在回复落库后被调用。
@@ -92,10 +105,30 @@ class Orchestrator:
     # ------------------------------------------------------------------ #
     # 会话
     # ------------------------------------------------------------------ #
-    def create_session(self, persona_id: str, user_id: str, scenario: str | None = None) -> Session:
+    def create_session(
+        self,
+        persona_id: str,
+        user_id: str,
+        scenario_id: str | None = None,
+        scenario: str | None = None,
+    ) -> Session:
+        """开一个会话。
+
+        `scenario_id` 语义是场景 id（如 `rainy_bookstore`），不存在抛 `ValueError`。
+        向后兼容：老调用用关键字 `scenario=` 传一段场景文本，此时按原样当作自由设定，
+        `Session.scenario_id` 里存的仍是那段文本，编译器退化成拼接行为。
+        """
         persona = self.persona_factory.get(self.repo, persona_id)
-        session = Session(persona_id=persona_id, user_id=user_id, scenario_id=scenario)
+        scenario_id = scenario_id if scenario_id is not None else scenario
+        resolved = self._resolve_scenario(scenario_id)
+        session = Session(
+            persona_id=persona_id,
+            user_id=user_id,
+            scenario_id=(resolved.id if isinstance(resolved, Scenario) else scenario_id),
+        )
         self.repo.save_session(session)
+        if isinstance(resolved, Scenario):
+            self.repo.save_scenario_progress(session.id, resolved.progress())
         if self.repo.get_affect(persona_id, user_id) is None:
             self.repo.save_affect(
                 persona_id,
@@ -105,6 +138,33 @@ class Orchestrator:
         if self.repo.get_relation(persona_id, user_id) is None:
             self.repo.save_relation(RelationState(persona_id=persona_id, user_id=user_id))
         return session
+
+    # ------------------------------------------------------------------ #
+    # 场景
+    # ------------------------------------------------------------------ #
+    def _resolve_scenario(self, scenario_id: str | None) -> Scenario | str | None:
+        """场景 id → Scenario；非 id 的老式自由文本原样返回。
+
+        先按 id 查，查不到再退一步：文本里带空格/标点（不像 id）就当自由设定。
+        这样 M1 的 `create_session(..., scenario="雨天的书店，傍晚…")` 不会炸。
+        """
+        if not scenario_id:
+            return None
+        try:
+            return load_scenario(scenario_id)
+        except FileNotFoundError:
+            if _looks_like_id(scenario_id):
+                raise ValueError(f"场景不存在: {scenario_id}") from None
+            return scenario_id
+
+    def _load_session_scenario(self, session: Session) -> Scenario | str | None:
+        if not session.scenario_id:
+            return None
+        try:
+            return load_scenario(session.scenario_id)
+        except FileNotFoundError:
+            # 会话里存的是老式自由文本（M1 写法），或场景 yaml 被删了
+            return session.scenario_id if not _looks_like_id(session.scenario_id) else None
 
     # ------------------------------------------------------------------ #
     # 单轮
@@ -120,7 +180,15 @@ class Orchestrator:
         user_turn_id = self.repo.append_turn(session_id, "user", content)
         user_turn = Turn(id=user_turn_id, session_id=session_id, role="user", content=content)
 
-        recall, state = self._recall_and_update(session, persona, content, user_turn_id)
+        # 场景进度：每轮开始读出未完成节拍。放在 LLM 之前，
+        # 与 affect/relation 一样属于「这一轮的状态输入」。
+        scenario = self._load_session_scenario(session)
+        if isinstance(scenario, Scenario):
+            scenario.restore(self.repo.get_scenario_progress(session.id))
+
+        recall, state = self._recall_and_update(
+            session, persona, content, user_turn_id, scenario
+        )
 
         yield ServerEvent.thinking(
             "recall",
@@ -146,6 +214,10 @@ class Orchestrator:
             session_id, "assistant", reply, affect=state.affect.pad.model_dump()
         )
         self.memory_writer(session, persona, [user_turn])
+
+        # 节拍推进：与写记忆同一时机（回复落库之后）。绝不提前——
+        # 否则用户还没说的话就能推进剧情。
+        scenario_state = self._advance_scenario(session, scenario, content)
 
         self._strengthen(recall)
         session.last_active_at = now_utc()
@@ -175,6 +247,7 @@ class Orchestrator:
                 },
                 "red_flags": state.red_flags,
                 "toxic_signals": state.toxic_signals,
+                "scenario": scenario_state,
             },
             usage=usage,
         )
@@ -182,8 +255,22 @@ class Orchestrator:
     # ------------------------------------------------------------------ #
     # 流水线内部
     # ------------------------------------------------------------------ #
+    def _advance_scenario(
+        self, session: Session, scenario: Scenario | str | None, content: str
+    ) -> dict:
+        if not isinstance(scenario, Scenario):
+            return {"scenario_id": None}
+        if scenario.advance(content):
+            self.repo.save_scenario_progress(session.id, scenario.progress())
+        return scenario.state()
+
     def _recall_and_update(
-        self, session: Session, persona: PersonaCard, content: str, user_turn_id: int
+        self,
+        session: Session,
+        persona: PersonaCard,
+        content: str,
+        user_turn_id: int,
+        scenario: Scenario | str | None = None,
     ) -> tuple[RetrievalResult, _StateSnapshot]:
         """记忆检索 ∥ 状态更新。
 
@@ -207,14 +294,18 @@ class Orchestrator:
             recall = recall_future.result()
             affect_after, relation_after, impacts, red_flags, toxic_signals = state_future.result()
 
+        # 开场旁白只在第一轮注入：此后它已经是历史，再讲一遍就是复读。
+        # `history` 里已经包含本轮的 user turn，所以「第一轮」= 只有这一条。
+        opening = len(history) <= 1
         prompt = compose(
             persona,
             affect_after,
             relation_after,
             recall.nodes,
             self._history_messages(history),
-            scenario=session.scenario_id,
+            scenario=scenario,
             budget_tokens=self.budget_tokens,
+            opening=opening,
         )
 
         state = _StateSnapshot(

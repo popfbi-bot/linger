@@ -71,7 +71,10 @@ class CreatePersonaRequest(BaseModel):
 class CreateSessionRequest(BaseModel):
     persona_id: str = Field(..., min_length=1)
     user_id: str = Field(..., min_length=1)
-    scenario: str | None = None
+    # 语义是场景 id（如 rainy_bookstore）。老字段名 `scenario` 保留兼容：
+    # M1 的调用方传的是自由设定文本，两者都收，`scenario_id` 优先。
+    scenario_id: str | None = None
+    scenario: str | None = Field(default=None, description="兼容字段，等同 scenario_id")
 
     @field_validator("persona_id", "user_id")
     @classmethod
@@ -128,6 +131,40 @@ def _memory_brief(node) -> dict[str, Any]:
         "pinned": node.pinned,
         "created_at": node.created_at.isoformat(),
     }
+
+
+def _scenario_detail(scenario) -> dict[str, Any]:
+    return {
+        "id": scenario.id,
+        "title": scenario.title,
+        "world": scenario.world,
+        "setting": scenario.setting,
+        "opening_narration": scenario.opening_narration,
+        "user_role": scenario.user_role,
+        "beats": [{"id": b.id, "goal": b.goal} for b in scenario.beats],
+        "constraints": scenario.constraints,
+        "exit_conditions": scenario.exit_conditions,
+    }
+
+
+def _session_scenario_state(repo: Repository, session) -> dict[str, Any]:
+    """会话的场景进度摘要（GET /v1/sessions/{id} 与创建响应共用）。
+
+    没有场景 → `{"scenario_id": None}`；老式自由文本 → 只有 scenario_id；
+    真场景 → id / title / done_beats / pending_beats。
+    """
+    from ..scenario import Scenario, load_scenario
+
+    if not session.scenario_id:
+        return {"scenario_id": None}
+    try:
+        scenario = load_scenario(session.scenario_id)
+    except FileNotFoundError:
+        return {"scenario_id": session.scenario_id}
+    if not isinstance(scenario, Scenario):  # pragma: no cover - 防御
+        return {"scenario_id": session.scenario_id}
+    scenario.restore(repo.get_scenario_progress(session.id))
+    return scenario.state()
 
 
 # --------------------------------------------------------------------------- #
@@ -226,6 +263,25 @@ def create_app(
         }
 
     # ------------------------------------------------------------------ #
+    # 场景（剧本）
+    # ------------------------------------------------------------------ #
+    @app.get("/v1/scenarios")
+    def list_scenarios_endpoint() -> dict[str, Any]:
+        """场景清单。前端先看有什么可点，再用 scenario_id 开会话。"""
+        from ..scenario import list_scenarios
+
+        return {"scenarios": list_scenarios()}
+
+    @app.get("/v1/scenarios/{scenario_id}")
+    def get_scenario_endpoint(scenario_id: str) -> dict[str, Any]:
+        from ..scenario import load_scenario
+
+        try:
+            return _scenario_detail(load_scenario(scenario_id))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"场景不存在: {scenario_id}") from exc
+
+    # ------------------------------------------------------------------ #
     # 人格
     # ------------------------------------------------------------------ #
     @app.get("/v1/personas")
@@ -266,12 +322,21 @@ def create_app(
     ) -> dict[str, Any]:
         if repo.get_persona(body.persona_id) is None:
             raise HTTPException(status_code=404, detail=f"人格不存在: {body.persona_id}")
-        session = orch.create_session(body.persona_id, body.user_id, body.scenario)
+
+        # scenario_id 优先；老字段 scenario 兼容（可能是 id，也可能是自由文本，
+        # 由 Orchestrator 决定怎么解释）。
+        requested = body.scenario_id or body.scenario
+        try:
+            session = orch.create_session(body.persona_id, body.user_id, requested)
+        except ValueError as exc:
+            # 场景 id 不存在 → 404（不是 500，也不是静默忽略）
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {
             "session_id": session.id,
             "persona_id": session.persona_id,
             "user_id": session.user_id,
             "scenario_id": session.scenario_id,
+            "scenario": _session_scenario_state(repo, session),
         }
 
     @app.get("/v1/sessions/{session_id}")
@@ -289,6 +354,7 @@ def create_app(
             "persona_id": session.persona_id,
             "user_id": session.user_id,
             "scenario_id": session.scenario_id,
+            "scenario": _session_scenario_state(repo, session),
             "started_at": session.started_at.isoformat(),
             "affect": (
                 {"label": affect.label, **affect.pad.model_dump()} if affect else None

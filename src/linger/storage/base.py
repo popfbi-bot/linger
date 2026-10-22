@@ -78,6 +78,20 @@ class Repository(ABC):
     @abstractmethod
     def delete_memory(self, memory_id: str) -> None: ...
 
+    # ---- 场景进度（M1.5） ---------------------------------------------- #
+    @abstractmethod
+    def save_scenario_progress(self, session_id: str, data: dict) -> None:
+        """写入某个会话的场景进度。
+
+        存最简结构 `{"scenario_id": ..., "done_beats": [...]}`——
+        场景定义属于代码（YAML），进度属于运行时数据，两者不能混在一处，
+        否则改一个 yaml 就会重写用户的历史。
+        """
+
+    @abstractmethod
+    def get_scenario_progress(self, session_id: str) -> dict | None:
+        """读回场景进度；没有记录返回 None（= 所有节拍都还没走）。"""
+
     # ---- 回溯 ---------------------------------------------------------- #
     @abstractmethod
     def save_trace(self, trace: TraceRecord) -> None: ...

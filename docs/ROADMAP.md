@@ -21,32 +21,55 @@
 
 ### A 组：前端最小可跑界面
 
-- [ ] `GET /` 返回 200，`content-type` 含 `text/html`
-- [ ] 页面**无外部 CDN 依赖**（离线可跑，不引 React/Vue/Tailwind 的 CDN）
-- [ ] 页面含五个可见区块：人格选择 / 对话区 / 情绪指示器 / 记忆面板 / trace 面板
-- [ ] JS 调用的端点与后端一致：`GET /v1/personas/templates`、`POST /v1/sessions`、`POST /v1/sessions/{id}/messages`
-- [ ] SSE 用 `fetch` + `ReadableStream` 或 `EventSource` 消费，且按 `event:` 分流
-- [ ] `affect` 事件到达时，情绪指示器的**文字与颜色都变化**（不是只在 console 打印）
-- [ ] `delta` 事件到达时，文本**逐段追加**到气泡（不是等 done 一次性显示）
-- [ ] `done` 事件到达后，记忆面板与 trace 面板**自动刷新**
-- [ ] 断线/404/422 时页面显示可读错误，不白屏
-- [ ] 静态资源由后端挂载（`/static/*` 可访问），刷新页面不掉状态
+- [x] `GET /` 返回 200，`content-type` 含 `text/html`
+- [x] 页面**无外部 CDN 依赖**（离线可跑，不引 React/Vue/Tailwind 的 CDN）
+- [x] 页面含五个可见区块：人格选择 / 对话区 / 情绪指示器 / 记忆面板 / trace 面板
+- [x] JS 调用的端点与后端一致：`GET /v1/personas/templates`、`POST /v1/sessions`、`POST /v1/sessions/{id}/messages`
+- [x] SSE 用 `fetch` + `ReadableStream` 或 `EventSource` 消费，且按 `event:` 分流
+- [x] `affect` 事件到达时，情绪指示器的**文字与颜色都变化**（不是只在 console 打印）
+- [x] `delta` 事件到达时，文本**逐段追加**到气泡（不是等 done 一次性显示）
+- [x] `done` 事件到达后，记忆面板与 trace 面板**自动刷新**
+- [x] 断线/404/422 时页面显示可读错误，不白屏
+- [x] 静态资源由后端挂载（`/static/*` 可访问），刷新页面不掉状态
+
+> **A 组状态（2026-10-22 完成，commit `23b5504`）**：10 条全部通过，17 个测试钉住
+> （静态资源 HTTP、五区块 DOM、零 CDN 的 7 种模式检查、JS 端点与后端一致性、
+> SSE 解析四个边界、六种情绪标签的 JS/CSS 映射与引擎一致性）。
+> 另经真实 uvicorn + 模拟前端完整流程复验：页面 3.8KB、事件顺序
+> `thinking→affect→thinking→delta×13→done`、13 段 delta 拼成完整回复、记忆面板显示 2 条。
+>
+> **实现中撞到的真问题**：`TextDecoder` 必须带 `{stream: true}`。
+> 实测按 64 字节切片时，中文多字节序列会被切断（0xe5 首字节落在一块边界上），
+> 不做增量解码会直接抛 `UnicodeDecodeError`——这个问题只有用小块读才暴露，
+> 一次读完整个响应是发现不了的。
+
+> **B 组状态（2026-10-22 完成）**：12 条全部通过，**经独立验收**——不只是跑它写的测试，
+> 而是自己写脚本逐条核对（含「已完成节拍是否真的从 prompt 消失」的逐轮验证）。
+> 合并 A 组前端后全量 **139 passed**（118 + 21）。
+> 场景进度落在新表 `scenario_progress`（session_id 主键），Repository 抽象新增
+> `save_scenario_progress` / `get_scenario_progress`；节拍推进在回复落库之后，与写记忆同一时机。
+> 向后兼容：`create_session(..., scenario="一段文本")` 与 `compose(scenario="一段文本")` 仍按原样拼接。
+>
+> **独立验收补记（判据的精确化）**：原判据「已完成的节拍不再出现在后续 prompt 里」
+> 表述不够精确，会误判。准确说法是「**本轮开始时已完成的**节拍不出现在**本轮** prompt 里」——
+> 本轮正在推进的那个节拍，在本轮 prompt 里是**必须**存在的（否则 AI 不知道要推进它）。
+> 逐轮实测：第 1 轮 3 个节拍全在 → 第 2 轮 b1 消失 → 第 3 轮 b1/b2 消失 → 第 4 轮全消失并出现收束提示。
 
 ### B 组：场景运行时（角色扮演第二层）
 
-- [ ] 新增 `src/linger/scenario/` 模块，含结构化 `Scenario` 模型
-- [ ] `Scenario` 字段齐备：`id`/`title`/`world`/`setting`/`opening_narration`/`user_role`/`beats`/`constraints`/`exit_conditions`
-- [ ] 至少 **2 个内置场景** YAML（`src/linger/templates/scenarios/*.yaml`）
-- [ ] `GET /v1/scenarios` 返回场景列表（含 id/title/setting 摘要）
-- [ ] `POST /v1/sessions` 支持 `scenario_id`；不存在的 id 返回 **404**
-- [ ] 编译器的 `scenario` 块包含三样东西：场景设定 + **未完成节拍** + 约束
+- [x] 新增 `src/linger/scenario/` 模块，含结构化 `Scenario` 模型
+- [x] `Scenario` 字段齐备：`id`/`title`/`world`/`setting`/`opening_narration`/`user_role`/`beats`/`constraints`/`exit_conditions`
+- [x] 至少 **2 个内置场景** YAML（`src/linger/templates/scenarios/*.yaml`）
+- [x] `GET /v1/scenarios` 返回场景列表（含 id/title/setting 摘要）
+- [x] `POST /v1/sessions` 支持 `scenario_id`；不存在的 id 返回 **404**
+- [x] 编译器的 `scenario` 块包含三样东西：场景设定 + **未完成节拍** + 约束
       （不再只是把字符串原样拼进 prompt）
-- [ ] 节拍按**关键词 trigger** 推进（确定性，可复现，不用模型判定）
-- [ ] 已完成的节拍**不再出现在**后续 prompt 里（否则 AI 会反复推进同一节拍）
-- [ ] 场景进度**持久化**：重建 Orchestrator 后节拍进度不丢
-- [ ] 一轮结束后 `done` 事件或 trace 里能看到当前节拍状态
-- [ ] `python -m pytest` 全绿，且测试数 **> 101**
-- [ ] 干净克隆后 pytest 通过
+- [x] 节拍按**关键词 trigger** 推进（确定性，可复现，不用模型判定）
+- [x] 已完成的节拍**不再出现在**后续 prompt 里（否则 AI 会反复推进同一节拍）
+- [x] 场景进度**持久化**：重建 Orchestrator 后节拍进度不丢
+- [x] 一轮结束后 `done` 事件或 trace 里能看到当前节拍状态
+- [x] `python -m pytest` 全绿，且测试数 **> 101**
+- [x] 干净克隆后 pytest 通过
 
 ### 范围边界
 

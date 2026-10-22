@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..models import AffectState, MemoryNode, PAD, PersonaCard, RelationState, Session, TraceRecord, Turn
+from ..models import PAD, AffectState, MemoryNode, PersonaCard, RelationState, Session, TraceRecord, Turn
 from .base import Repository
 
 _SCHEMA = """
@@ -70,6 +70,11 @@ CREATE TABLE IF NOT EXISTS memory_node (
   status TEXT, pinned INTEGER, created_at TEXT, last_recalled_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mem_owner ON memory_node (persona_id, user_id, status);
+CREATE TABLE IF NOT EXISTS scenario_progress (
+  session_id TEXT PRIMARY KEY,
+  payload TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS trace (
   turn_id INTEGER PRIMARY KEY,
   payload TEXT NOT NULL,
@@ -285,6 +290,22 @@ class SQLiteRepository(Repository):
         # 软删除：status='deleted'。硬删除走单独的管理接口（48h 内物理清理）。
         self.conn.execute("UPDATE memory_node SET status='deleted' WHERE id=?", (memory_id,))
         self.conn.commit()
+
+    # ---- 场景进度 ------------------------------------------------------ #
+    def save_scenario_progress(self, session_id: str, data: dict) -> None:
+        self.conn.execute(
+            "INSERT INTO scenario_progress (session_id, payload, updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(session_id) DO UPDATE SET payload=excluded.payload, "
+            "updated_at=excluded.updated_at",
+            (session_id, _j(data), _dt(datetime.now(timezone.utc))),
+        )
+        self.conn.commit()
+
+    def get_scenario_progress(self, session_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT payload FROM scenario_progress WHERE session_id=?", (session_id,)
+        ).fetchone()
+        return None if row is None else json.loads(row["payload"])
 
     # ---- 回溯 ---------------------------------------------------------- #
     def save_trace(self, trace: TraceRecord) -> None:

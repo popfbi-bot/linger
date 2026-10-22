@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from ..affect.engine import expression_hints, hints_to_prompt
 from ..models import AffectState, MemoryNode, PersonaCard, RelationState
 from ..relation.engine import LEVEL_NAMES, addressing, boundaries
+from ..scenario.models import Scenario
 
 # 上下文预算分配（§3.6.2）
 BUDGET = {
@@ -128,10 +129,53 @@ def _relation_block(card: PersonaCard, rel: RelationState) -> str:
     )
 
 
-def _scenario_block(scenario: str | None) -> str:
+def _scenario_block(
+    scenario: Scenario | str | None,
+    include_opening: bool = False,
+) -> str:
+    """渲染场景状态：设定 + **未完成节拍** + 约束。
+
+    三条要点：
+    · 已完成的节拍**不写进来**——否则 AI 会把同一节拍反复推进，
+      这是场景运行时最典型的翻车方式。
+    · 开场旁白只在第一轮出现。第二轮起它已经是「历史」，再讲一遍就成了复读。
+    · 传字符串（M1 老接口）时退化成原样拼接，不炸。
+    """
     if not scenario:
         return "## 此刻的场景\n（没有特别设定。就当作普通的日常对话。）"
-    return "## 此刻的场景\n" + scenario.strip()
+    if isinstance(scenario, str):
+        return "## 此刻的场景\n" + scenario.strip()
+
+    lines = ["## 此刻的场景"]
+
+    where = "；".join(x for x in (scenario.setting, scenario.world) if x)
+    lines.append(f"【{scenario.title}】{where}" if where else f"【{scenario.title}】")
+
+    if include_opening and scenario.opening_narration:
+        lines.append("")
+        lines.append(scenario.opening_narration.strip())
+
+    if scenario.user_role:
+        lines.append(f"对方在这个场景里是：{scenario.user_role.strip()}")
+
+    # 节拍状态以模型为准：调用方负责先把持久化进度 restore 进来
+    rest = scenario.pending_beats()
+    lines.append("")
+    if rest:
+        lines.append("### 还没发生的事（不要提前推进）")
+        for beat in rest:
+            lines.append(f"- {beat.goal}")
+    else:
+        lines.append("### 节拍已走完")
+        lines.append("该发生的事都发生过了。可以自然地收束这段场景——别硬拗新的悬念。")
+
+    if scenario.constraints:
+        lines.append("")
+        lines.append("### 场景约束")
+        for c in scenario.constraints:
+            lines.append(f"- {c}")
+
+    return "\n".join(lines)
 
 
 def _affect_block(state: AffectState) -> str:
@@ -182,9 +226,10 @@ def compose(
     relation: RelationState,
     memories: list[MemoryNode],
     history: list[dict[str, str]],
-    scenario: str | None = None,
+    scenario: Scenario | str | None = None,
     budget_tokens: int = 8000,
     now: datetime | None = None,
+    opening: bool = False,
 ) -> ComposedPrompt:
     now = now or datetime.now(timezone.utc)
 
@@ -198,7 +243,7 @@ def compose(
         else None,
         Block("relation", _relation_block(card, relation)),
         Block("social", social_text) if social_text else None,
-        Block("scenario", _scenario_block(scenario)),
+        Block("scenario", _scenario_block(scenario, opening)),
         Block("affect", _affect_block(affect)),
         Block("memory", _memory_block(memories, relation, now)),
     ]
