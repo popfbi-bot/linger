@@ -106,3 +106,94 @@ def test_needs_for_generic_now_hits_profiles(kb):
     from linger.companion.profile import needs_for
 
     assert needs_for("", kb) == kb.companion_profiles()[:5]
+
+
+# --------------------------------------------------------------------------- #
+# 判定函数本身
+#
+# 上面那些用例验的是「端到端结果」，这里是「判定层」。缺这一段会出假绿：
+# 本窗口验收 PR #14 时实测过——把 `_is_profiles_heading` 改成恒真、
+# 去掉 `if "陪伴" in name` 那层，上面 7 条端到端用例**全绿**，
+# 因为 `polarity == "companion"` 已经挡住了负面语料，那两层对当前语料是冗余的。
+#
+# 冗余不等于该删（语料新增文件时能兜住），但**没被测试覆盖的判据等于不存在**。
+# 所以这里直接测判定函数，并逐条验证过「改坏会红」。
+# --------------------------------------------------------------------------- #
+
+from linger.social.knowledge import _is_profiles_heading, is_life_stage_section  # noqa: E402
+
+
+@pytest.mark.parametrize("heading,expected", [
+    ("上篇：按人生阶段梳理陪伴需求", True),
+    ("上篇：按人生阶段梳理的陪伴需求", True),
+    ("下篇：按陪伴角色类型梳理", False),
+    ("下篇：按陪伴角色类型梳理的需求", False),
+    ("", True),          # 语料没有 ## 分层时退回只看章节名
+    ("随便一个标题", False),
+])
+def test_is_profiles_heading(heading, expected):
+    """大标题必须能区分「人生阶段篇」与「角色类型篇」。
+
+    反例：把 `return "人生阶段" in heading and "角色类型" not in heading`
+    改成 `return True` → 后 3 条红（上篇/下篇分不开）。
+    """
+    assert _is_profiles_heading(heading) is expected
+
+
+@pytest.mark.parametrize("section,expected", [
+    ("一、胎儿期（出生前）", True),
+    ("二、婴儿期（0-1岁）", True),
+    ("八、成年/中年期（30—55岁）", True),
+    ("一、学龄期", True),
+    ("一、更年期/准老年期", True),
+    # 下篇的章节。注意——这些 False 是「阶段名比对」挡的
+    # （下篇标题里根本没有任何阶段名），**不是**「陪伴」二字挡的。
+    ("一、亲情陪伴", False),
+    ("一、友情陪伴", False),
+    ("一、情感与亲密陪伴", False),
+    # 不是人生阶段的章节
+    ("一、目光交汇的瞬间", False),
+    ("如何走出孤独与有毒关系", False),
+    ("", False),
+])
+def test_is_life_stage_section(section, expected):
+    """章节名必须能认出「序号 + 阶段名」。
+
+    反例 1：去掉阶段名比对 → 5 条 True 用例红
+    反例 2：去掉序号前缀要求 →「如何走出孤独与有毒关系」变 True
+    """
+    assert is_life_stage_section(section) is expected
+
+
+def test_stage_name_matching_is_what_rejects_role_sections():
+    """说清一件事：挡住下篇的是「阶段名比对」，不是「陪伴」二字。
+
+    语料里下篇标题形如「一、亲情陪伴：血浓于水的牵绊」——不含任何阶段名，
+    所以 `any(stage in name ...)` 直接 False。`if "陪伴" in name` 那层
+    对当前语料不生效（死代码），它防的是「一、青春期陪伴」这种
+    **阶段名与陪伴撞车**的未来章节。
+
+    这条测试把那个事实钉住，免得后人误以为下篇是靠「陪伴」挡掉的，
+    也顺便给那层防御一个判据（去掉它 → 本条红）。
+    """
+    # 不含阶段名的下篇标题：被阶段名比对挡掉
+    assert is_life_stage_section("一、亲情陪伴：血浓于水的牵绊") is False
+    # 构造「阶段名 + 陪伴」的撞车标题：这才是「陪伴」那层唯一能生效的场景
+    assert is_life_stage_section("一、青春期陪伴：叛逆期的对话") is False
+    # 对照：同样的阶段名，不带「陪伴」就认得出
+    # （证明上一条不是被阶段名比对挡的，而是被「陪伴」那层挡的）
+    assert is_life_stage_section("一、青春期（12—18岁）") is True
+
+
+def test_negative_corpus_never_enters_profiles(kb):
+    """「陪伴缺失与有毒关系」的上篇同样按「一、胎儿期…」排版，
+    光靠 is_life_stage_section 认不出来——所以 companion_profiles() 必须另有
+    `polarity == "companion"` 这道闸。这条钉住「两道闸都要在」。"""
+    negative_texts = {
+        i.text for i in kb.items
+        if i.polarity == "negative" and i.dimension == "companion_negative"
+    }
+    assert negative_texts, "负面语料应该存在，否则这条判据失去意义"
+    assert not (set(kb.companion_profiles()) & negative_texts), (
+        "负面语料混进了陪伴需求——`polarity` 那道闸失效了"
+    )
