@@ -33,7 +33,7 @@
   角色/需求/风险分色标签、空态引导文案、`done` 后自动刷新；新增 15 个前端测试
 - ✅ **README 补齐**（commit `6b38672`）：修复 `pyproject.toml` 声明 `readme = "README.md"`
   但文件缺失导致 **`pip install .` 失败**的构建缺陷
-- ✅ **M2-C 记忆管理前端完成**（commit `a3c4f2a` 待填，见 git）：记忆面板支持**编辑**
+- ✅ **M2-C 记忆管理前端完成**（commit `c4c3dcd`）：记忆面板支持**编辑**
   与**编辑历史回溯**——前端每条记忆加「编辑」（行内 textarea + 保存/取消）与「历史」
   （展开 before/after）；后端新增 `memory_edit_log` 表 + `MemoryEditRecord` 模型 +
   `GET /v1/memories/{id}/edits` 端点，PATCH 时记录 old/new。
