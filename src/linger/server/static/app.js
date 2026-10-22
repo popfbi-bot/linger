@@ -21,6 +21,7 @@
     scenarioBeats: {},    // beat id → goal，用于进度面板显示
     personaId: null,
     sessionId: null,
+    userId: "u_web",      // 浏览器端单用户；多用户时换成登录态
     personaName: "",
     busy: false,
     lastTurnId: null,
@@ -57,6 +58,15 @@
     tracePanel: $("trace-panel"),
     thinkingStrip: $("thinking-strip"),
     thinkingText: $("thinking-text"),
+    companionEmpty: $("companion-empty"),
+    companionBody: $("companion-body"),
+    companionStage: $("companion-stage"),
+    companionRolesRow: $("companion-roles-row"),
+    companionRoles: $("companion-roles"),
+    companionNeedsRow: $("companion-needs-row"),
+    companionNeeds: $("companion-needs"),
+    companionRisksRow: $("companion-risks-row"),
+    companionRisks: $("companion-risks"),
   };
 
   // ───────────────────────────── 小工具 ─────────────────────────────
@@ -293,6 +303,66 @@
       renderMemories(data.memories || []);
     } catch (err) {
       console.warn("刷新记忆失败", err);
+    }
+  }
+
+  // ───────────────────────────── 陪伴档案（M2-B） ─────────────────────────────
+
+  function renderTags(container, row, items, cls) {
+    const list = items || [];
+    if (!list.length) {
+      row.hidden = true;
+      container.innerHTML = "";
+      return;
+    }
+    row.hidden = false;
+    container.innerHTML = list
+      .map((t) => `<span class="tag ${cls || ""}">${escapeHtml(String(t))}</span>`)
+      .join("");
+  }
+
+  function renderCompanion(profile) {
+    const p = profile || {};
+    const has = Boolean(
+      p.life_stage || (p.roles || []).length || (p.needs || []).length || (p.risks || []).length
+    );
+    el.companionEmpty.hidden = has;
+    el.companionBody.hidden = !has;
+    if (!has) return;
+
+    el.companionStage.value = p.life_stage || "";
+    renderTags(el.companionRoles, el.companionRolesRow, p.roles, "");
+    renderTags(el.companionNeeds, el.companionNeedsRow, p.needs, "is-need");
+    renderTags(el.companionRisks, el.companionRisksRow, p.risks, "is-risk");
+  }
+
+  async function refreshCompanion() {
+    if (!state.personaId) return;
+    const userId = state.userId || "u_web";
+    try {
+      const p = await api(
+        `/v1/companion/${encodeURIComponent(state.personaId)}/${encodeURIComponent(userId)}`
+      );
+      renderCompanion(p);
+    } catch (err) {
+      // 档案是可选状态：拉不到就显示引导文案，不打断主流程
+      console.warn("刷新陪伴档案失败", err);
+      renderCompanion(null);
+    }
+  }
+
+  async function saveCompanionStage(lifeStage) {
+    if (!state.personaId) return;
+    const userId = state.userId || "u_web";
+    try {
+      const p = await api(
+        `/v1/companion/${encodeURIComponent(state.personaId)}/${encodeURIComponent(userId)}`,
+        { method: "PATCH", body: JSON.stringify({ life_stage: lifeStage }) }
+      );
+      renderCompanion(p);
+    } catch (err) {
+      showError("保存陪伴档案失败：" + (err && err.message ? err.message : "未知错误"));
+      await refreshCompanion();
     }
   }
 
@@ -581,7 +651,7 @@
       // 2. 开一个会话（带场景，如果选了）
       const body = {
         persona_id: persona.id,
-        user_id: "u_web",   // 浏览器端单用户；多用户时换成登录态
+        user_id: state.userId,   // 浏览器端单用户；多用户时换成登录态
       };
       if (state.scenarioId) body.scenario_id = state.scenarioId;
 
@@ -605,6 +675,8 @@
       setConn(`与${state.personaName}对话中`, "pill-live");
       showSceneProgress({ done_beats: [], pending_beats: Object.keys(state.scenarioBeats) });
       addMessage("ai", `（${state.personaName}在这里。）`);
+      // 陪伴档案：新会话开始时拉一次（可能已有旧档案）
+      await refreshCompanion();
     } catch (err) {
       showError("开始会话失败：" + err.message);
       setConn("未连接", "pill-error");
@@ -722,6 +794,8 @@
         await refreshMemories();
         renderTrace(turnId, doneState);
       }
+      // 陪伴档案：每轮之后刷新（M2-B 判据）
+      await refreshCompanion();
 
       setConn(`与${state.personaName}对话中`, "pill-live");
     } catch (err) {
@@ -799,7 +873,13 @@
     state.scenarioId = null;
     state.scenarioBeats = {};
     el.sceneProgressCard.hidden = true;
+    renderCompanion(null);
     setConn("未连接", "pill-idle");
+  });
+
+  // 手动校正人生阶段（M2-B）：改完立即保存
+  el.companionStage.addEventListener("change", (e) => {
+    saveCompanionStage(e.target.value);
   });
 
   // ───────────────────────────── 启动 ─────────────────────────────

@@ -623,3 +623,79 @@ body {
   .col-left .card { flex: 1 1 210px; }
   .chat-card { min-height: 420px; }
 }
+
+/* ───────────── 陪伴档案（M2-B） ───────────── */
+
+.companion-empty {
+  padding: 2px 0 0;
+}
+
+.companion-body {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.companion-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.companion-row > .k {
+  flex: 0 0 30px;
+  color: var(--muted);
+  font-size: 12px;
+  padding-top: 3px;
+}
+
+.companion-select {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.companion-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.tag-list {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.tag {
+  display: inline-block;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid transparent;
+}
+
+.tag.is-risk {
+  background: #fdf3f3;
+  color: #a33;
+  border-color: #eccfcf;
+}
+
+.tag.is-need {
+  background: #f1f5f1;
+  color: var(--mood-calm);
+}

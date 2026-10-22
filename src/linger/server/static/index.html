@@ -70,6 +70,42 @@
       <p class="hint">关系只能靠时间和深度累积，不能靠高频刷。</p>
     </section>
 
+    <section class="card" id="companion-card">
+      <h2>陪伴档案</h2>
+      <div class="companion-empty" id="companion-empty">
+        <p class="muted small">她还不了解你。聊几句之后，这里会记下你处在什么阶段、在关系里是谁。</p>
+      </div>
+      <div class="companion-body" id="companion-body" hidden>
+        <div class="companion-row">
+          <span class="k">阶段</span>
+          <select id="companion-stage" class="companion-select">
+            <option value="">（未确定）</option>
+            <option value="胎儿期">胎儿期</option>
+            <option value="婴儿期">婴儿期</option>
+            <option value="幼儿期">幼儿期</option>
+            <option value="童年期">童年期</option>
+            <option value="青春期">青春期</option>
+            <option value="青年期">青年期</option>
+            <option value="中年期">中年期</option>
+            <option value="老年期">老年期</option>
+          </select>
+        </div>
+        <div class="companion-row" id="companion-roles-row" hidden>
+          <span class="k">角色</span>
+          <div class="tag-list" id="companion-roles"></div>
+        </div>
+        <div class="companion-row" id="companion-needs-row" hidden>
+          <span class="k">需要</span>
+          <div class="tag-list" id="companion-needs"></div>
+        </div>
+        <div class="companion-row" id="companion-risks-row" hidden>
+          <span class="k">风险</span>
+          <div class="tag-list" id="companion-risks"></div>
+        </div>
+        <p class="hint">阶段可以手动改——她据此调整陪伴的方式。</p>
+      </div>
+    </section>
+
   </aside>
 
   <!-- ───────────── 中栏：对话 ───────────── -->
