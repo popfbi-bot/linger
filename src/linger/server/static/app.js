@@ -35,6 +35,12 @@
 
   const el = {
     personaList: $("persona-list"),
+    personaCreatePanel: $("persona-create-panel"),
+    personaDesc: $("persona-desc"),
+    btnShowCreate: $("btn-show-create"),
+    btnGenerate: $("btn-generate"),
+    personaGenerateHint: $("persona-generate-hint"),
+    personaDraft: $("persona-draft"),
     scenarioList: $("scenario-list"),
     sceneCount: $("scene-count"),
     sceneProgressCard: $("scene-progress-card"),
@@ -643,6 +649,119 @@
     }
   }
 
+  // ───────────────────── 一句话造一个人格（M3-A） ─────────────────────
+
+  function toggleCreatePanel() {
+    const opening = el.personaCreatePanel.hidden;
+    el.personaCreatePanel.hidden = !opening;
+    el.btnShowCreate.textContent = opening ? "− 收起" : "+ 用一句话造一个";
+    if (opening) el.personaDesc.focus();
+  }
+
+  async function generateDraft() {
+    const desc = el.personaDesc.value.trim();
+    if (desc.length < 2) {
+      el.personaGenerateHint.textContent = "至少写两个字。";
+      return;
+    }
+    el.btnGenerate.disabled = true;
+    el.personaGenerateHint.textContent = "正在想这个人长什么样…";
+    el.personaDraft.hidden = true;
+    try {
+      const draft = await api("/v1/personas/generate", {
+        method: "POST",
+        body: JSON.stringify({ description: desc }),
+      });
+      renderDraft(draft);
+      el.personaGenerateHint.textContent = "";
+    } catch (err) {
+      el.personaGenerateHint.textContent = "生成失败：" + (err.message || err);
+    } finally {
+      el.btnGenerate.disabled = false;
+    }
+  }
+
+  function renderDraft(draft) {
+    const p = draft.persona || {};
+    const meta = p.meta || {};
+    const parts = [];
+
+    parts.push('<div class="draft-head">');
+    parts.push(`<div class="draft-name">${escapeHtml(meta.name || "（无名）")}</div>`);
+    const sub = [meta.identity, meta.archetype].filter(Boolean).map(escapeHtml).join(" · ");
+    if (sub) parts.push(`<div class="draft-meta">${sub}</div>`);
+    parts.push("</div>");
+
+    // 6 条台词：让人格“可试听”，比一堆 JSON 字段直观得多
+    if ((draft.preview || []).length) {
+      parts.push('<div class="draft-lines">');
+      for (const line of draft.preview) {
+        parts.push(`<div class="draft-line">「${escapeHtml(line)}」</div>`);
+      }
+      parts.push("</div>");
+    }
+
+    // 自动修正过的矛盾要告诉用户：这是「我们帮你改了」，不是「模型很完美」
+    if ((draft.warnings || []).length) {
+      parts.push('<div class="draft-warnings">');
+      parts.push(`<div class="draft-warn-title">自动修正了 ${draft.warnings.length} 处矛盾：</div>`);
+      for (const w of draft.warnings) {
+        parts.push(`<div class="draft-warn">· ${escapeHtml(w)}</div>`);
+      }
+      parts.push("</div>");
+    }
+
+    parts.push('<div class="draft-actions">');
+    parts.push('<button type="button" class="btn-primary" id="btn-confirm-persona">用这个开始</button>');
+    parts.push("</div>");
+
+    el.personaDraft.innerHTML = parts.join("");
+    el.personaDraft.hidden = false;
+
+    const confirmBtn = document.getElementById("btn-confirm-persona");
+    if (confirmBtn) {
+      confirmBtn.addEventListener("click", () =>
+        confirmDraft(p, meta.name || "自定义人格")
+      );
+    }
+  }
+
+  async function confirmDraft(persona, name) {
+    const btn = document.getElementById("btn-confirm-persona");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "创建中…";
+    }
+    try {
+      const created = await api("/v1/personas", {
+        method: "POST",
+        body: JSON.stringify({ persona }),
+      });
+      // 收掉生成面板，避免用户以为还要再点一次
+      el.personaDraft.hidden = true;
+      el.personaCreatePanel.hidden = true;
+      el.btnShowCreate.textContent = "+ 用一句话造一个";
+      el.personaDesc.value = "";
+      await openSession(created.id, created.name || name);
+    } catch (err) {
+      el.personaGenerateHint.textContent = "创建失败：" + (err.message || err);
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "用这个开始";
+      }
+    }
+  }
+
+  el.btnShowCreate.addEventListener("click", toggleCreatePanel);
+  el.btnGenerate.addEventListener("click", generateDraft);
+  // Ctrl/Cmd+Enter 直接生成，省得伸手点按钮
+  el.personaDesc.addEventListener("keydown", (ev) => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
+      ev.preventDefault();
+      generateDraft();
+    }
+  });
+
   // ───────────────────────────── 场景选择 ─────────────────────────────
 
   async function loadScenarios() {
@@ -752,47 +871,55 @@
     setConn("准备中…", "pill-busy");
 
     try {
-      // 1. 实例化人格（模板 → 库里的行）
+      // 入口 A：模板实例化（模板 → 库里的行）
       const persona = await api("/v1/personas", {
         method: "POST",
         body: JSON.stringify({ template_id: state.templateId }),
       });
-
-      // 2. 开一个会话（带场景，如果选了）
-      const body = {
-        persona_id: persona.id,
-        user_id: state.userId,   // 浏览器端单用户；多用户时换成登录态
-      };
-      if (state.scenarioId) body.scenario_id = state.scenarioId;
-
-      const session = await api("/v1/sessions", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-
-      state.personaId = persona.id;
-      state.sessionId = session.session_id;
-
-      // 3. 清空并解锁输入
-      el.messages.innerHTML = "";
-      renderMemories([]);
-      el.tracePanel.innerHTML =
-        '<p class="muted small">聊一句，这里会显示这一轮的召回与 token 分布。</p>';
-      el.input.disabled = false;
-      el.send.disabled = false;
-      el.input.focus();
-
-      setConn(`与${state.personaName}对话中`, "pill-live");
-      showSceneProgress({ done_beats: [], pending_beats: Object.keys(state.scenarioBeats) });
-      addMessage("ai", `（${state.personaName}在这里。）`);
-      // 陪伴档案：新会话开始时拉一次（可能已有旧档案）
-      await refreshCompanion();
+      await openSession(persona.id, state.personaName);
     } catch (err) {
       showError("开始会话失败：" + err.message);
       setConn("未连接", "pill-error");
     } finally {
       state.busy = false;
     }
+  }
+
+  /** 人格已落库之后：开会话、清空界面、解锁输入。
+   *
+   * 两条入口共用（模板实例化 / 一句话生成确认）——
+   * 「人格从哪来」不该影响「会话怎么开」。
+   */
+  async function openSession(personaId, personaName) {
+    const body = {
+      persona_id: personaId,
+      user_id: state.userId,   // 浏览器端单用户；多用户时换成登录态
+    };
+    if (state.scenarioId) body.scenario_id = state.scenarioId;
+
+    const session = await api("/v1/sessions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+
+    state.personaId = personaId;
+    state.sessionId = session.session_id;
+    state.personaName = personaName;
+
+    // 清空并解锁输入
+    el.messages.innerHTML = "";
+    renderMemories([]);
+    el.tracePanel.innerHTML =
+      '<p class="muted small">聊一句，这里会显示这一轮的召回与 token 分布。</p>';
+    el.input.disabled = false;
+    el.send.disabled = false;
+    el.input.focus();
+
+    setConn(`与${personaName}对话中`, "pill-live");
+    showSceneProgress({ done_beats: [], pending_beats: Object.keys(state.scenarioBeats) });
+    addMessage("ai", `（${personaName}在这里。）`);
+    // 陪伴档案：新会话开始时拉一次（可能已有旧档案）
+    await refreshCompanion();
   }
 
   // ───────────────────────────── 发消息（SSE 主流程） ─────────────────────────────

@@ -199,6 +199,105 @@ body {
   font-style: italic;
 }
 
+/* ───────────── 一句话生成人格（M3-A） ───────────── */
+
+.persona-create {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.persona-create-toggle {
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  background: none;
+  border: none;
+  padding: 2px 0;
+  cursor: pointer;
+}
+.persona-create-toggle:hover { text-decoration: underline; }
+
+.persona-create-panel { margin-top: 8px; }
+
+.persona-desc {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  resize: vertical;
+}
+
+.persona-create-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.btn-secondary {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.btn-secondary:hover { background: var(--accent-soft); }
+.btn-secondary:disabled { opacity: .55; cursor: default; }
+
+.persona-draft {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+}
+
+.draft-head { margin-bottom: 8px; }
+.draft-name { font-weight: 600; font-size: 14px; }
+.draft-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+.draft-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+  border-top: 1px dashed var(--border);
+  border-bottom: 1px dashed var(--border);
+}
+.draft-line {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+
+.draft-warnings {
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: #fdf6e8;
+  border: 1px solid #f0e3c6;
+}
+.draft-warn-title { font-size: 11px; color: #9a6a1b; font-weight: 600; }
+.draft-warn {
+  font-size: 11px;
+  color: #8a6428;
+  line-height: 1.55;
+  margin-top: 2px;
+}
+
+.draft-actions { margin-top: 10px; }
+
 /* ───────────── 场景选择 ───────────── */
 
 .scenario-list { display: flex; flex-direction: column; gap: 8px; }

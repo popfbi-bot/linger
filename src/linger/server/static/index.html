@@ -27,9 +27,29 @@
 
     <section class="card">
       <h2>人格</h2>
-      <p class="hint">选一个模板开始。人格是库里的一行，不是 prompt 里的一段话。</p>
+      <p class="hint">选一个模板，或者用一句话造一个。</p>
       <div id="persona-list" class="persona-list">
         <p class="muted small">加载中…</p>
+      </div>
+
+      <!-- M3-A：一句话生成人格 -->
+      <div class="persona-create">
+        <button type="button" id="btn-show-create" class="persona-create-toggle">
+          + 用一句话造一个
+        </button>
+        <div id="persona-create-panel" class="persona-create-panel" hidden>
+          <textarea
+            id="persona-desc"
+            class="persona-desc"
+            rows="2"
+            placeholder="一个嘴硬心软的退役剑客，说话很短，爱说「随便」"
+          ></textarea>
+          <div class="persona-create-actions">
+            <button type="button" id="btn-generate" class="btn-secondary">生成</button>
+            <span id="persona-generate-hint" class="muted small"></span>
+          </div>
+          <div id="persona-draft" class="persona-draft" hidden></div>
+        </div>
       </div>
     </section>
 

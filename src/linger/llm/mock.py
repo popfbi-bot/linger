@@ -25,6 +25,34 @@ _POS = ("升职", "开心", "考上了", "好消息", "加薪", "通过了", "�
 _OPENERS_GOOD = ["诶，", "嗯……", "真的？", "……"]
 _OPENERS_BAD = ["嗯……", "……", "嗯。"]
 
+# --------------------------------------------------------------------------- #
+# 人格生成（M3-A）：免密钥环境的固定产出
+# --------------------------------------------------------------------------- #
+# 这份 JSON 是「已经过冲突消解」的干净样本：故意不制造矛盾，
+# 好让 `python examples/serve.py` 的演示顺滑（一个 warning 都不弹）。
+# 冲突消解本身由 tests/test_persona_generate.py 用注入的坏数据验证，不靠 mock。
+_MOCK_PERSONA_JSON = """{
+  "meta": {"name": "陈砚", "aliases": ["老陈"], "age": 41,
+           "identity": "退役镖师，如今在城南开酒铺", "archetype": "嘴硬心软的长辈"},
+  "traits": {"openness": 0.45, "conscientiousness": 0.7, "extraversion": 0.35,
+             "agreeableness": 0.72, "neuroticism": 0.3},
+  "voice": {"register": "口语、短句、带点旧时候的腔调", "avg_sentence_len": [8, 22],
+            "emoji_rate": 0.0, "emoji_set": [], "verbal_tics": ["坐下", "先喝口酒"],
+            "forbidden_phrases": ["亲爱的", "宝贝"]},
+  "values": {"stance_advice": "不替人做决定，只把话说明白"},
+  "affect": {"baseline": {"pleasure": 0.1, "arousal": 0.25, "dominance": 0.55}},
+  "initiative": {"max_proactive_per_day": 1, "proactive_topics": ["今天下雨了"]}
+}"""
+
+_MOCK_PREVIEW = "\n".join([
+    "坐下。先喝口酒，话慢慢说。",
+    "这事我不替你拿主意。你自己心里其实有数。",
+    "外头风大，别站门口。",
+    "我年轻时候也这么想，后来才知道没那么简单。",
+    "行了，别硬撑。撑久了人是要坏的。",
+    "……嗯。我在听。",
+])
+
 
 def _first_question(user: str) -> str | None:
     for line in user.replace("？", "?").split("?"):
@@ -45,6 +73,17 @@ class MockProvider:
         messages: list[dict[str, str]],
         ctx: dict[str, Any] | None = None,
     ) -> Iterator[str]:
+        # 人格生成请求走固定产出（M3-A）。延迟导入：generator 在 persona 包里，
+        # 包级导入会形成 llm → persona → ... 的回环。
+        from ..persona.generator import GENERATE_MARKER, PREVIEW_MARKER
+
+        if GENERATE_MARKER in system:
+            yield from chunks(_MOCK_PERSONA_JSON, size=12)
+            return
+        if PREVIEW_MARKER in system:
+            yield from chunks(_MOCK_PREVIEW, size=12)
+            return
+
         ctx = ctx or {}
         user = ""
         for m in reversed(messages):

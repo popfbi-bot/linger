@@ -34,14 +34,15 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..companion import LIFE_STAGES, correct_life_stage, life_stage_valid
 from ..config import settings
 from ..llm import get_provider
 from ..memory.embedding import get_embedder
-from ..models import CompanionProfile, MemoryEditRecord, now_utc
+from ..models import CompanionProfile, MemoryEditRecord, PersonaCard, new_id, now_utc
 from ..orchestrator import Orchestrator
+from ..persona.generator import PersonaGenerateError, generate_persona
 from ..storage.base import Repository
 from ..storage.sqlite import SQLiteRepository
 
@@ -57,19 +58,59 @@ _STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 class CreatePersonaRequest(BaseModel):
-    template_id: str = Field(..., min_length=1, description="人格模板 id，如 linxi / laojiang")
+    """创建人格：两条入口共用同一个端点（架构 §3.1.3「四条入口统一」）。
+
+    - 入口 A（模板市场）：只给 `template_id`，从预置模板实例化。
+    - 入口 B（一句话生成）：把 `/v1/personas/generate` 返回的 `persona` **原样**传回，
+      确认落库。服务端会重发 id 并标记 `provenance.type = "generated"`。
+    """
+
+    template_id: str | None = Field(default=None, description="人格模板 id，如 linxi / laojiang")
+    persona: dict[str, Any] | None = Field(
+        default=None, description="完整人格卡（生成预览确认后落库）"
+    )
 
     @field_validator("template_id")
     @classmethod
-    def _not_blank(cls, v: str) -> str:
+    def _not_blank(cls, v: str | None) -> str | None:
         """拒绝纯空白。
 
         `min_length=1` 只挡得住空字符串，挡不住 "   "——
         而空白 template_id 会一路走到存储层才炸，错误码还不受控。
         """
+        if v is None:
+            return None
         v = v.strip()
         if not v:
             raise ValueError("template_id 不能为空白")
+        return v
+
+    @model_validator(mode="after")
+    def _at_least_one(self) -> "CreatePersonaRequest":
+        """两种模式必须给一个。空 body 不许静默成功。"""
+        if not self.template_id and not self.persona:
+            raise ValueError("template_id 与 persona 至少给一个")
+        return self
+
+
+class GeneratePersonaRequest(BaseModel):
+    """一句话生成人格（入口 B）。"""
+
+    description: str = Field(..., description="一句话描述，如「一个嘴硬心软的退役剑客」")
+
+    @field_validator("description")
+    @classmethod
+    def _check(cls, v: str) -> str:
+        """长度与空白都在入口挡住。
+
+        太短（1 个字）模型只能瞎编；太长（>200）不是「一句话」，
+        用户真想要细节应该走五步向导（入口 D）。
+        """
+        v = v.strip()
+        if len(v) < 2:
+            raise ValueError("描述至少 2 个字")
+        if len(v) > 200:
+            raise ValueError("描述不能超过 200 字")
         return v
 
 
@@ -386,12 +427,46 @@ def create_app(
 
         return list_templates()
 
+    @app.post("/v1/personas/generate")
+    def generate_persona_endpoint(
+        body: GeneratePersonaRequest,
+        orch: Orchestrator = Depends(get_orch),
+    ) -> dict[str, Any]:
+        """一句话描述 → 人格卡提案（**不落库**）。
+
+        返回 `persona` / `warnings` / `preview`。前端展示预览，
+        用户确认后把 `persona` 原样 POST 到 `/v1/personas` 落库。
+
+        为什么不生成即入库：用户会反复试描述（「嘴硬心软」改成「嘴硬心更软」），
+        每次都入库会把人格库变成草稿箱。
+        """
+        try:
+            result = generate_persona(body.description, orch.llm)
+        except PersonaGenerateError as exc:
+            # 模型吐了不可用的东西 → 422（是「这次生成不能要」，不是服务端坏了）
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return result.as_dict()
+
     @app.post("/v1/personas", status_code=201)
     def create_persona(
         body: CreatePersonaRequest,
         repo: Repository = Depends(get_repo),
         orch: Orchestrator = Depends(get_orch),
     ) -> dict[str, Any]:
+        # 入口 B：生成预览确认后落库
+        if body.persona is not None:
+            try:
+                card = PersonaCard(**body.persona)
+            except Exception as exc:
+                raise HTTPException(status_code=422, detail=f"人格卡不合法：{exc}") from exc
+            # id 必须服务端重发：客户端带回来的 id 不可信（可能撞库或被伪造）
+            card.id = new_id("p")
+            card.version = 1
+            card.provenance = {**(card.provenance or {}), "type": "generated"}
+            repo.save_persona(card)
+            return _persona_brief(card)
+
+        # 入口 A：模板实例化
         try:
             card = orch.persona_factory.create(body.template_id, repo)
         except (FileNotFoundError, KeyError, ValueError) as exc:
