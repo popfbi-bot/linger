@@ -8,6 +8,8 @@
 - ✅ 骨架已推送 main（commit `1c60583`）
 - ✅ Issue #1 已交付并由 PR #2 合并（squash sha `02ff633`）：`orchestrator` + 事件类型 + 演示 + 测试
 - ✅ **M0 验收全部通过**（详见下方勾选清单）
+- ✅ **人际知识库（Social Knowledge Base）已落地**（commit `874ad94`）：五份语料 → 1113 条结构化行为条目，按阶段/极性索引，注入编译器；全量 24 passed
+- 🚧 **Issue #3 已派工**：红灯检测 → 关系降级 + AI 行为边界（等待 NPC 交付 PR）
 
 ## 验收清单（M0「能跑通一轮」）
 
