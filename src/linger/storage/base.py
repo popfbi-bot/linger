@@ -8,11 +8,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import date
 from typing import Any
 
 from ..models import (
     AffectState,
     CompanionProfile,
+    DiaryEntry,
     MemoryEditRecord,
     MemoryNode,
     PersonaCard,
@@ -77,6 +79,15 @@ class Repository(ABC):
 
     @abstractmethod
     def get_session(self, session_id: str) -> Session | None: ...
+
+    @abstractmethod
+    def list_sessions(self, persona_id: str, user_id: str, limit: int = 100) -> list[Session]:
+        """列出某个人格与某个用户之间的会话（最近活跃的在前）。
+
+        **为什么需要它**：日记是「当天」的产物，而 turn 只挂在 session 上。
+        要收集「今天这个人格与这个用户聊了什么」，必须先能按人找到会话——
+        否则只能遍历全表 turn，那在真实数据量下是灾难。
+        """
 
     # ---- 对话轮（L0） -------------------------------------------------- #
     @abstractmethod
@@ -167,6 +178,32 @@ class Repository(ABC):
 
         None 是常态（新用户、纯闲聊），调用方要能空手走开：
         HTTP 层返回空档案而不是 404，编译器直接跳过注入。
+        """
+
+    # ---- 日记（M3-D） -------------------------------------------------- #
+    @abstractmethod
+    def save_diary(self, entry: DiaryEntry) -> None:
+        """写入一篇日记（**upsert**）。
+
+        唯一键是 `(persona_id, user_id, date)`，不是 `id`：
+        一天只有一篇，重复生成是覆盖当天那篇，不是再插一行。
+        所以实现必须按三元组做 ON CONFLICT，`id` 只在首次生成时定下来。
+        """
+
+    @abstractmethod
+    def get_diary(self, persona_id: str, user_id: str, day: date) -> DiaryEntry | None:
+        """取某一天的日记；没有返回 None（HTTP 层映射 404）。
+
+        没有任何日记**不等于**「今天什么都没发生」——
+        那两件事在语义上完全不同，所以这里不造空壳日记。
+        """
+
+    @abstractmethod
+    def list_diary(self, persona_id: str, user_id: str, limit: int = 30) -> list[DiaryEntry]:
+        """按日期倒序列出日记（新的在前）。
+
+        用户隔离是硬要求：日记按 `(persona_id, user_id)` 过滤，
+        `u_a` 的心事不能被 `u_b` 读到。
         """
 
     # ---- 回溯 ---------------------------------------------------------- #

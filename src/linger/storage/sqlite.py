@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,7 @@ from ..models import (
     PAD,
     AffectState,
     CompanionProfile,
+    DiaryEntry,
     MemoryEditRecord,
     MemoryNode,
     PersonaCard,
@@ -107,6 +108,20 @@ CREATE TABLE IF NOT EXISTS memory_edit_log (
   edited_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mem_edit_memory ON memory_edit_log (memory_id, id);
+-- 日记：一天一篇。唯一键是三元组，不是 id —— 重复生成必须命中冲突去覆盖，
+-- 否则「写下今天」会变成「每次点都多一篇」。
+CREATE TABLE IF NOT EXISTS diary_entry (
+  id TEXT PRIMARY KEY,
+  persona_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  date TEXT NOT NULL,
+  content TEXT NOT NULL,
+  mood_label TEXT,
+  highlight_memories TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (persona_id, user_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_diary_owner ON diary_entry (persona_id, user_id, date);
 """
 
 
@@ -233,6 +248,24 @@ class SQLiteRepository(Repository):
             started_at=_pd(row["started_at"]) or datetime.now(timezone.utc),
             last_active_at=_pd(row["last_active_at"]) or datetime.now(timezone.utc),
         )
+
+    def list_sessions(self, persona_id: str, user_id: str, limit: int = 100) -> list[Session]:
+        rows = self.conn.execute(
+            "SELECT * FROM session WHERE persona_id=? AND user_id=? "
+            "ORDER BY last_active_at DESC LIMIT ?",
+            (persona_id, user_id, limit),
+        ).fetchall()
+        return [
+            Session(
+                id=r["id"],
+                persona_id=r["persona_id"],
+                user_id=r["user_id"],
+                scenario_id=r["scenario_id"],
+                started_at=_pd(r["started_at"]) or datetime.now(timezone.utc),
+                last_active_at=_pd(r["last_active_at"]) or datetime.now(timezone.utc),
+            )
+            for r in rows
+        ]
 
     # ---- 对话轮 -------------------------------------------------------- #
     def append_turn(
@@ -447,6 +480,55 @@ class SQLiteRepository(Repository):
             risks=_pj(row["risks"], []),
             updated_at=_pd(row["updated_at"]) or datetime.now(timezone.utc),
         )
+
+    # ---- 日记（M3-D） -------------------------------------------------- #
+    def save_diary(self, entry: DiaryEntry) -> None:
+        """upsert。冲突键 = (persona_id, user_id, date)，即「一天一篇」。
+
+        冲突时**保留原 id**：id 是这篇日记的身份，日期没变就不该换身份
+        （前端靠 id 做高亮 diff）。`created_at` 反而要刷新——
+        它记的是「这篇是什么时候写下的」，重写就是重写。
+
+        不这么写会怎样：若冲突键是 id，同一天第二次生成会插进第二行，
+        `list_diary` 变成同一天两条，用户看到两个「今天」。
+        """
+        self.conn.execute(
+            "INSERT INTO diary_entry (id, persona_id, user_id, date, content, mood_label, "
+            "highlight_memories, created_at) VALUES (?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(persona_id, user_id, date) DO UPDATE SET "
+            "content=excluded.content, mood_label=excluded.mood_label, "
+            "highlight_memories=excluded.highlight_memories, created_at=excluded.created_at",
+            (entry.id, entry.persona_id, entry.user_id, entry.date.isoformat(), entry.content,
+             entry.mood_label, _j(entry.highlight_memories), _dt(entry.created_at)),
+        )
+        self.conn.commit()
+
+    def _row_to_diary(self, r: sqlite3.Row) -> DiaryEntry:
+        return DiaryEntry(
+            id=r["id"],
+            persona_id=r["persona_id"],
+            user_id=r["user_id"],
+            date=date.fromisoformat(r["date"]),
+            content=r["content"] or "",
+            mood_label=r["mood_label"] or "",
+            highlight_memories=_pj(r["highlight_memories"], []),
+            created_at=_pd(r["created_at"]) or datetime.now(timezone.utc),
+        )
+
+    def get_diary(self, persona_id: str, user_id: str, day: date) -> DiaryEntry | None:
+        row = self.conn.execute(
+            "SELECT * FROM diary_entry WHERE persona_id=? AND user_id=? AND date=?",
+            (persona_id, user_id, day.isoformat()),
+        ).fetchone()
+        return None if row is None else self._row_to_diary(row)
+
+    def list_diary(self, persona_id: str, user_id: str, limit: int = 30) -> list[DiaryEntry]:
+        rows = self.conn.execute(
+            "SELECT * FROM diary_entry WHERE persona_id=? AND user_id=? "
+            "ORDER BY date DESC LIMIT ?",
+            (persona_id, user_id, limit),
+        ).fetchall()
+        return [self._row_to_diary(r) for r in rows]
 
     # ---- 回溯 ---------------------------------------------------------- #
     def save_trace(self, trace: TraceRecord) -> None:

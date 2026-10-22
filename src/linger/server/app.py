@@ -27,6 +27,8 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from datetime import date as date_cls
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -38,9 +40,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..companion import LIFE_STAGES, correct_life_stage, life_stage_valid
 from ..config import settings
+from ..diary import DiaryGenerateError, generate_diary
 from ..llm import get_provider
 from ..memory.embedding import get_embedder
-from ..models import CompanionProfile, MemoryEditRecord, PersonaCard, new_id, now_utc
+from ..models import CompanionProfile, DiaryEntry, MemoryEditRecord, PersonaCard, new_id, now_utc
 from ..orchestrator import Orchestrator
 from ..persona.generator import PersonaGenerateError, generate_persona
 from ..storage.base import Repository
@@ -167,6 +170,26 @@ class CorrectLifeStageRequest(BaseModel):
         return v
 
 
+class GenerateDiaryRequest(BaseModel):
+    """写下今天。`date` 可选，默认「今天」。
+
+    日期在这里只做**格式**校验（`2026-13-45` → 422）。
+    「今天没有对话」是生成层的判断，不是请求体校验——
+    那需要查库，属于业务，不属于 schema。
+    """
+
+    user_id: str = Field(..., min_length=1)
+    date: date_cls | None = Field(default=None, description="YYYY-MM-DD，默认今天")
+
+    @field_validator("user_id")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("user_id 不能为空白")
+        return v
+
+
 class UpdateMemoryRequest(BaseModel):
     """用户编辑自己的一条记忆（部分更新）。
 
@@ -251,6 +274,44 @@ def _companion_detail(profile) -> dict[str, Any]:
         "is_empty": profile.is_empty,
         "updated_at": profile.updated_at.isoformat(),
     }
+
+
+def _diary_detail(entry: DiaryEntry) -> dict[str, Any]:
+    return {
+        "id": entry.id,
+        "persona_id": entry.persona_id,
+        "user_id": entry.user_id,
+        "date": entry.date.isoformat(),
+        "content": entry.content,
+        "mood_label": entry.mood_label,
+        "highlight_memories": list(entry.highlight_memories),
+        "created_at": entry.created_at.isoformat(),
+    }
+
+
+def _today() -> date_cls:
+    """「今天」按**本地时区**算，不是 UTC。
+
+    日记是给人看的：北京时间凌晨 1 点写的，用户认的是那天，
+    而不是 UTC 还停留在昨天的那个日期。差一天会让「今天」的日记落到昨天，
+    用户点「写下今天」看到的是昨天那篇。
+    """
+    return datetime.now().astimezone().date()
+
+
+def _turns_of_day(repo: Repository, persona_id: str, user_id: str, day: date_cls) -> list:
+    """当天该 (persona_id, user_id) 的全部 turn。
+
+    turn 表只按 session 建索引、不带 persona/user，所以先按人筛会话再取轮次。
+    会话数量是「一个人和她的所有会话」，量级小；真到需要时再加冗余列与迁移。
+    """
+    out = []
+    for session in repo.list_sessions(persona_id, user_id):
+        for turn in repo.list_turns(session.id, limit=1000):
+            if turn.created_at.astimezone().date() == day:
+                out.append(turn)
+    out.sort(key=lambda t: (t.created_at, t.id))
+    return out
 
 
 def _scenario_detail(scenario) -> dict[str, Any]:
@@ -731,6 +792,101 @@ def create_app(
         """用户手动校正人生阶段。非法阶段值由请求体校验挡成 422。"""
         profile = correct_life_stage(repo, persona_id, user_id, body.life_stage)
         return {**_companion_detail(profile), "life_stages": list(LIFE_STAGES)}
+
+    # ------------------------------------------------------------------ #
+    # 日记（M3-D）
+    # ------------------------------------------------------------------ #
+    @app.post("/v1/personas/{persona_id}/diary/generate")
+    def generate_diary_endpoint(
+        persona_id: str,
+        body: GenerateDiaryRequest,
+        repo: Repository = Depends(get_repo),
+        orch: Orchestrator = Depends(get_orch),
+    ) -> dict[str, Any]:
+        """让「她」写下今天。**同一天重复调用是覆盖**，不是新增。
+
+        错误码的分工是刻意的：
+          · 人格不存在 → 404（调用方找错了人，不是内容有问题）
+          · 日期非法 → 422（由请求体校验挡下，如 2026-13-45）
+          · 今天没有对话 → 422（DiaryGenerateError）——不是 500。
+            这是「这次生成不能要」，不是服务端坏了；编一篇「今天什么都没发生」
+            更糟，用户会以为她真的记得一个空白的日子。
+
+        日记不在对话链路里（不是 orchestrator 的一环）：这里只是读当天已有的
+        turn / 记忆 / 情绪，走一次独立的生成。所以它不会拖慢任何一轮对话。
+        """
+        card = repo.get_persona(persona_id)
+        if card is None:
+            raise HTTPException(status_code=404, detail=f"人格不存在: {persona_id}")
+
+        day = body.date or _today()
+        turns = _turns_of_day(repo, persona_id, body.user_id, day)
+        affect = repo.get_affect(persona_id, body.user_id)
+        affect_label = (affect.label if affect else "") or "中性"
+        memories = repo.list_memories(persona_id, body.user_id, limit=50)
+
+        try:
+            entry, warnings = generate_diary(
+                card, body.user_id, day, turns, memories, affect_label, orch.llm
+            )
+        except DiaryGenerateError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        # 重写当天那篇时沿用原 id：日期没变，这篇日记还是同一篇。
+        # 换 id 会让前端「高亮新日记」的 diff 看起来像换了一个对象。
+        existing = repo.get_diary(persona_id, body.user_id, day)
+        if existing is not None:
+            entry.id = existing.id
+        # upsert：唯一键 (persona_id, user_id, date)，所以这里天然是幂等的
+        repo.save_diary(entry)
+        return {"entry": _diary_detail(entry), "warnings": warnings}
+
+    @app.get("/v1/personas/{persona_id}/diary")
+    def list_diary_endpoint(
+        persona_id: str,
+        user_id: str,
+        limit: int = 30,
+        repo: Repository = Depends(get_repo),
+    ) -> dict[str, Any]:
+        """按日期倒序列出日记。
+
+        空列表是 200 而不是 404：日记是可选状态，「她还没写过」不是错误，
+        前端据此显示引导文案。
+        """
+        if repo.get_persona(persona_id) is None:
+            raise HTTPException(status_code=404, detail=f"人格不存在: {persona_id}")
+        entries = repo.list_diary(persona_id, user_id, limit=limit)
+        return {"persona_id": persona_id, "user_id": user_id,
+                "count": len(entries), "diary": [_diary_detail(e) for e in entries]}
+
+    @app.get("/v1/personas/{persona_id}/diary/{day}")
+    def get_diary_endpoint(
+        persona_id: str,
+        day: str,
+        user_id: str,
+        repo: Repository = Depends(get_repo),
+    ) -> dict[str, Any]:
+        """取某一天的日记。没有 → 404（「这天她没写」是明确事实，不是空壳）。
+
+        `day` 用字符串接收再自己 parse：路径参数声明成 `date` 时，
+        非法值由框架校验，报错形态不受这里控制；自己 parse 能保证
+        422 且 detail 是中文人话。
+        """
+        if repo.get_persona(persona_id) is None:
+            raise HTTPException(status_code=404, detail=f"人格不存在: {persona_id}")
+        try:
+            target = date_cls.fromisoformat(day)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail=f"日期格式非法: {day}（应为 YYYY-MM-DD）"
+            ) from exc
+
+        entry = repo.get_diary(persona_id, user_id, target)
+        if entry is None:
+            raise HTTPException(
+                status_code=404, detail=f"这一天还没有日记: {persona_id}/{user_id}/{day}"
+            )
+        return {"entry": _diary_detail(entry)}
 
     # ------------------------------------------------------------------ #
     # trace 回溯

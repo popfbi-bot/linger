@@ -27,6 +27,7 @@
     lastTurnId: null,
     streamEl: null,     // 当前正在流式写入的气泡
     streamText: "",
+    diaryHighlightId: null,   // 刚生成的那篇日记，用高亮标出来（M3-D）
   };
 
   /** 本机用户标识：localStorage 持久化。
@@ -97,6 +98,11 @@
     companionNeeds: $("companion-needs"),
     companionRisksRow: $("companion-risks-row"),
     companionRisks: $("companion-risks"),
+    diaryCard: $("diary-card"),
+    diaryList: $("diary-list"),
+    diaryCount: $("diary-count"),
+    btnWriteDiary: $("btn-write-diary"),
+    diaryHint: $("diary-hint"),
   };
 
   // ───────────────────────────── 小工具 ─────────────────────────────
@@ -506,6 +512,114 @@
     }
   }
 
+  // ───────────────────────────── 她的日记（M3-D） ─────────────────────────────
+  //
+  // 日记是**后处理**，不在对话链路里：读当天已有的 turn / 记忆 / 情绪，写一篇。
+  // 所以它有自己的按钮，不和「发消息」抢时机——用户想看她写的时候再让她写。
+  //
+  // 一条纪律：一天只有一篇。重复点「写下今天」是覆盖当天那篇（后端按
+  // (persona_id, user_id, date) upsert），所以这里不需要「已写过就别写」的判断。
+
+  function renderDiary(entries) {
+    el.diaryCount.textContent = String(entries.length);
+
+    if (!entries.length) {
+      el.diaryList.innerHTML =
+        '<p class="diary-empty">还没有日记。聊过之后，让她写下今天。</p>';
+      return;
+    }
+
+    el.diaryList.innerHTML = "";
+    for (const d of entries) {
+      const item = document.createElement("div");
+      item.className = "diary-item";
+      if (state.diaryHighlightId && d.id === state.diaryHighlightId) {
+        item.classList.add("is-new");
+      }
+      // 日期 · 心情标签（心情为空就不显示，别留一个空胶囊）
+      const head = document.createElement("div");
+      head.className = "diary-head";
+      head.innerHTML =
+        `<span class="diary-date">${escapeHtml(d.date || "")}</span>` +
+        (d.mood_label
+          ? `<span class="diary-mood">${escapeHtml(d.mood_label)}</span>`
+          : "");
+      const body = document.createElement("div");
+      body.className = "diary-content";
+      body.textContent = d.content || "";
+
+      item.appendChild(head);
+      item.appendChild(body);
+
+      // 当天最值得记的 1~3 条：她「记住」了什么，摆在日记下面
+      if ((d.highlight_memories || []).length) {
+        const hl = document.createElement("div");
+        hl.className = "diary-highlights";
+        for (const m of d.highlight_memories) {
+          const chip = document.createElement("span");
+          chip.className = "diary-highlight";
+          chip.textContent = m;
+          hl.appendChild(chip);
+        }
+        item.appendChild(hl);
+      }
+
+      el.diaryList.appendChild(item);
+    }
+  }
+
+  async function refreshDiary() {
+    if (!state.personaId) return;
+    try {
+      const data = await api(
+        `/v1/personas/${encodeURIComponent(state.personaId)}/diary?user_id=` +
+          encodeURIComponent(state.userId)
+      );
+      renderDiary(data.diary || []);
+    } catch (err) {
+      // 日记是可选状态：拉不到就显示空态，不打断主流程
+      console.warn("刷新日记失败", err);
+      renderDiary([]);
+    }
+  }
+
+  async function writeDiary() {
+    if (!state.personaId) return;
+    state.diaryHighlightId = null;
+    el.btnWriteDiary.disabled = true;
+    el.btnWriteDiary.textContent = "正在写…";
+    el.diaryHint.textContent = "";
+    try {
+      const data = await api(
+        `/v1/personas/${encodeURIComponent(state.personaId)}/diary/generate`,
+        {
+          method: "POST",
+          body: JSON.stringify({ user_id: state.userId }),
+        }
+      );
+      // 新写的这篇要高亮：用户刚按了按钮，得看见「多出来的东西是什么」
+      state.diaryHighlightId = (data.entry && data.entry.id) || null;
+      await refreshDiary();
+      // 流水账风险要告诉用户，但不用红色报错——日记已经写出来了
+      const warns = data.warnings || [];
+      el.diaryHint.textContent = warns.length ? warns[0] : "";
+    } catch (err) {
+      // api() 抛的是「422 今天还没有对话，写不出日记」这种带状态码的串。
+      // 422 是「现在写不出来」，不是服务坏了，用提示而不是错误横幅。
+      const msg = String((err && err.message) || err);
+      if (msg.startsWith("422")) {
+        el.diaryHint.textContent = msg.replace(/^422\s*/, "") || "今天还没有对话，写不出日记。";
+      } else {
+        showError("写日记失败：" + msg);
+      }
+    } finally {
+      el.btnWriteDiary.disabled = false;
+      el.btnWriteDiary.textContent = "写下今天";
+    }
+  }
+
+  el.btnWriteDiary.addEventListener("click", writeDiary);
+
   // ───────────────────────────── trace 面板 ─────────────────────────────
 
   const BLOCK_COLOR = {
@@ -787,6 +901,12 @@
     el.send.disabled = true;
     renderMemories([]);
     renderCompanion(null);
+    state.diaryHighlightId = null;
+    el.btnWriteDiary.disabled = true;
+    el.diaryHint.textContent = "";
+    el.diaryList.innerHTML =
+      '<p class="diary-empty">还没有日记。聊过之后，让她写下今天。</p>';
+    el.diaryCount.textContent = "0";
     el.tracePanel.innerHTML =
       '<p class="muted small">聊一句，这里会显示这一轮的召回与 token 分布。</p>';
     el.affectBadge.className = "affect-badge is-neutral";
@@ -1069,6 +1189,11 @@
     addMessage("ai", `（${personaName}在这里。）`);
     // 陪伴档案：新会话开始时拉一次（可能已有旧档案）
     await refreshCompanion();
+    // 日记：新会话开始时拉一次（可能之前写过），并放开「写下今天」
+    state.diaryHighlightId = null;
+    el.btnWriteDiary.disabled = false;
+    el.diaryHint.textContent = "";
+    await refreshDiary();
   }
 
   // ───────────────────────────── 发消息（SSE 主流程） ─────────────────────────────
@@ -1260,6 +1385,12 @@
     state.scenarioBeats = {};
     el.sceneProgressCard.hidden = true;
     renderCompanion(null);
+    state.diaryHighlightId = null;
+    el.btnWriteDiary.disabled = true;
+    el.diaryHint.textContent = "";
+    el.diaryList.innerHTML =
+      '<p class="diary-empty">还没有日记。聊过之后，让她写下今天。</p>';
+    el.diaryCount.textContent = "0";
     setConn("未连接", "pill-idle");
   });
 

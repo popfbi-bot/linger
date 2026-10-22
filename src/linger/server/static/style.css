@@ -906,3 +906,94 @@ body {
   background: #f1f5f1;
   color: var(--mood-calm);
 }
+
+/* ───────────── 她的日记（M3-D） ─────────────
+   日记是「她写的」，所以刻意与记忆面板长得不一样：
+   记忆是一颗颗标签（可编辑的条目），日记是一段段正文（只可读）。
+   同样的卡片样式会让用户以为日记也能点开改。 */
+
+.diary-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  flex-wrap: wrap;
+}
+
+.diary-hint {
+  font-size: 11px;
+}
+
+.diary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.diary-item {
+  background: var(--surface-soft);
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  animation: rise .25s ease both;
+}
+
+/* 刚写下的那篇：淡金左描边 + 极浅底，一眼能认出「新多出来的就是这个」 */
+.diary-item.is-new {
+  border-left-color: var(--accent);
+  background: #fdfaf4;
+}
+
+.diary-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+}
+
+.diary-date {
+  font-size: 11px;
+  color: var(--muted, #9a9187);
+  letter-spacing: .02em;
+}
+
+.diary-mood {
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.diary-content {
+  font-size: 13px;
+  line-height: 1.72;
+  color: var(--text, #3a3430);
+  white-space: pre-wrap;
+}
+
+.diary-highlights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.diary-highlight {
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  background: #f4f1ec;
+  color: #857a6c;
+}
+
+.diary-empty {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted, #9a9187);
+  margin: 0;
+}

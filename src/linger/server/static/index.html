@@ -169,6 +169,21 @@
       </div>
     </section>
 
+    <!-- M3-D：她的日记。放在「她记得的事」下方——顺序是有意的：
+         记忆是原料（她记住了什么），日记是成品（她自己写下了什么）。
+         先看原料再看成品，读起来才像「她先记住，然后写下来」。 -->
+    <section class="card" id="diary-card">
+      <h2>她的日记 <span id="diary-count" class="count">0</span></h2>
+      <p class="hint">她写下的今天。只写感受，不写你们说了什么。</p>
+      <div class="diary-actions">
+        <button type="button" id="btn-write-diary" class="btn-secondary" disabled>写下今天</button>
+        <span id="diary-hint" class="muted small"></span>
+      </div>
+      <div id="diary-list" class="diary-list">
+        <p class="diary-empty">还没有日记。聊过之后，让她写下今天。</p>
+      </div>
+    </section>
+
     <section class="card">
       <h2>这一轮发生了什么</h2>
       <div id="trace-panel" class="trace-panel">

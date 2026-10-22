@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date as date_cls
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -311,6 +312,32 @@ class CompanionProfile(BaseModel):
         编译器据此跳过 `companion` 块，保持 prompt 前缀稳定（§3.6 缓存纪律）。
         """
         return not (self.life_stage or self.roles or self.needs or self.risks)
+
+
+# --------------------------------------------------------------------------- #
+# 日记（M3-D，架构 §3.3.2 巩固管线第 6 步）
+# --------------------------------------------------------------------------- #
+
+
+class DiaryEntry(BaseModel):
+    """她写下的「今天」。
+
+    架构把日记定为产品级巧思：它同时是上下文压缩、可解释性与情感价值。
+    所以这里存的不是「对话摘要」，而是**她的第一人称感受**——
+    `content` 写的是情绪，不是流水账（判据由 `diary.flow._flow_check` 兜底）。
+
+    主键语义是 `(persona_id, user_id, date)`：一天只有一篇。
+    重复生成是覆盖，不是新增——否则「每天一篇」会退化成「每点一次一篇」。
+    """
+
+    id: str = Field(default_factory=lambda: new_id("d"))
+    persona_id: str
+    user_id: str
+    date: date_cls  # 只到天。时分秒属于 turn，不属于日记。
+    content: str = ""
+    mood_label: str = ""
+    highlight_memories: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=now_utc)
 
 
 # --------------------------------------------------------------------------- #

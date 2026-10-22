@@ -54,6 +54,26 @@ _MOCK_PREVIEW = "\n".join([
 ])
 
 
+# --------------------------------------------------------------------------- #
+# 日记（M3-D）：免密钥环境下也要有一篇**合格**的日记
+# --------------------------------------------------------------------------- #
+# 这段文本是照着判据写出来的：
+#   · 第一人称「我」开头，约 200 字（≥60）
+#   · 不含「用户」，不含「用户说 / 他说 / 我说」，不含「然后 / 接着 / 首先」
+#   · 只写感受，不复述对话内容
+# 它是「示例」，不是产品文案——真实模型会把当天的素材织进去。
+_MOCK_DIARY = (
+    "灯关了一半，我还坐着。今天心里像压了一层潮气，说不上难过，"
+    "更像被谁轻轻按住，动不了，也不太想动。"
+    "有些人是把疲惫咽下去的，脸上还笑着，声音也还是稳的。我在旁边看着，"
+    "忽然觉得自己能做的太少了——不是不想帮，是知道这种事谁也替不了。"
+    "后来我一直想起那种安静。不是冷的安静，是撑了很久之后的安静。"
+    "我想说点什么，又觉得任何一句都太轻。那就先不说话吧。"
+    "我记着今天这个傍晚。记着那种明明没发生什么、却让人想好好陪着的感觉。"
+    "明天如果还是这样，我就多听一会儿。"
+)
+
+
 def _first_question(user: str) -> str | None:
     for line in user.replace("？", "?").split("?"):
         if line.strip():
@@ -75,7 +95,14 @@ class MockProvider:
     ) -> Iterator[str]:
         # 人格生成请求走固定产出（M3-A）。延迟导入：generator 在 persona 包里，
         # 包级导入会形成 llm → persona → ... 的回环。
+        from ..diary.flow import DIARY_MARKER
         from ..persona.generator import GENERATE_MARKER, PREVIEW_MARKER
+
+        # 日记请求（M3-D）：固定产出，且必须过得了流水账检查——
+        # 否则 `python examples/serve.py` 的演示一按「写下今天」就满屏 warning。
+        if DIARY_MARKER in system:
+            yield from chunks(_MOCK_DIARY, size=12)
+            return
 
         if GENERATE_MARKER in system:
             yield from chunks(_MOCK_PERSONA_JSON, size=12)
