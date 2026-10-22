@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from ..affect.engine import hints_to_prompt, expression_hints
+from ..affect.engine import expression_hints, hints_to_prompt
 from ..models import AffectState, MemoryNode, PersonaCard, RelationState
 from ..relation.engine import LEVEL_NAMES, addressing, boundaries
 
@@ -99,6 +99,22 @@ def _constraints_block(card: PersonaCard) -> str:
     return "\n".join(lines)
 
 
+def _ai_boundaries_block(rel: RelationState) -> str:
+    """AI 自己的行为底线（人际层）。
+
+    和 _constraints_block 是一对：那一块约束「你是 AI」，
+    这一块约束「你是个懂分寸的人」。两者都紧跟 persona 放在前缀缓存区里，
+    因为它们不随对话变化。
+    """
+    from ..social import ai_boundaries, stage_for_level
+
+    try:
+        return ai_boundaries(stage_for_level(rel.level))
+    except Exception:
+        # 知识库损坏不阻断主链路
+        return ""
+
+
 def _relation_block(card: PersonaCard, rel: RelationState) -> str:
     level_name = LEVEL_NAMES[min(rel.level, len(LEVEL_NAMES) - 1)]
     call = addressing(rel.level, card.meta.aliases)
@@ -173,9 +189,13 @@ def compose(
     now = now or datetime.now(timezone.utc)
 
     social_text = _social_block(relation)
+    ai_bounds_text = _ai_boundaries_block(relation)
     blocks = [
         Block("persona", _persona_block(card), cacheable=True),
-        Block("constraints", _constraints_block(card), cacheable=True, cache_break_after=True),
+        Block("constraints", _constraints_block(card), cacheable=True),
+        Block("ai_boundaries", ai_bounds_text, cacheable=True, cache_break_after=True)
+        if ai_bounds_text
+        else None,
         Block("relation", _relation_block(card, relation)),
         Block("social", social_text) if social_text else None,
         Block("scenario", _scenario_block(scenario)),
@@ -183,6 +203,9 @@ def compose(
         Block("memory", _memory_block(memories, relation, now)),
     ]
     blocks = [b for b in blocks if b is not None]
+    if not any(b.cache_break_after for b in blocks):
+        # 人际底线块缺失时，缓存断点仍要落在第一段稳定前缀之后
+        blocks[0].cache_break_after = True
 
     # 记忆块超预算时，从尾部（分数最低）裁掉
     mem_budget = int(budget_tokens * BUDGET["memory"])

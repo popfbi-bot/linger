@@ -38,6 +38,7 @@ from .models import (
 from .persona.templates import load_template
 from .relation.engine import tick
 from .server import ServerEvent
+from .social.redflag import RedFlagDetector, get_detector
 from .storage.base import Repository
 
 ENTITY_PATTERN = re.compile(r"[\u4e00-\u9fff]{0,6}(公司|医院|书店|学校)")
@@ -74,6 +75,7 @@ class Orchestrator:
         recall_k: int | None = None,
         recall_gate: float | None = None,
         budget_tokens: int | None = None,
+        redflag_detector: RedFlagDetector | None = None,
     ) -> None:
         self.repo = repo
         self.llm = llm
@@ -83,6 +85,7 @@ class Orchestrator:
         self.recall_k = settings.recall_k if recall_k is None else recall_k
         self.recall_gate = settings.recall_gate if recall_gate is None else recall_gate
         self.budget_tokens = settings.context_budget_tokens if budget_tokens is None else budget_tokens
+        self.redflag_detector = redflag_detector or get_detector()
 
     # ------------------------------------------------------------------ #
     # 会话
@@ -163,7 +166,12 @@ class Orchestrator:
             ],
             state={
                 "affect": {"label": state.affect.label, **state.affect.pad.model_dump()},
-                "relation": {"level": state.relation.level, "intimacy": state.relation.intimacy},
+                "relation": {
+                    "level": state.relation.level,
+                    "intimacy": state.relation.intimacy,
+                    "unresolved_conflicts": state.relation.unresolved_conflicts,
+                },
+                "red_flags": state.red_flags,
             },
             usage=usage,
         )
@@ -194,7 +202,7 @@ class Orchestrator:
             recall_future = pool.submit(self._recall, content, query_vec, memories)
             state_future = pool.submit(self._update_state, persona, affect_before, relation_before, content)
             recall = recall_future.result()
-            affect_after, relation_after, impacts = state_future.result()
+            affect_after, relation_after, impacts, red_flags = state_future.result()
 
         prompt = compose(
             persona,
@@ -212,6 +220,7 @@ class Orchestrator:
             relation=relation_after,
             affect_before=affect_before,
             impacts=impacts,
+            red_flags=red_flags,
             prompt=prompt,
             messages=[{"role": "user", "content": content}],
         )
@@ -238,7 +247,7 @@ class Orchestrator:
         affect_before: AffectState,
         relation_before: RelationState,
         content: str,
-    ) -> tuple[AffectState, RelationState, list]:
+    ) -> tuple[AffectState, RelationState, list, list[str]]:
         impacts = evaluate(content)
         affect_after = step(
             affect_before,
@@ -246,13 +255,17 @@ class Orchestrator:
             impacts,
             sensitivity=persona.affect.sensitivity,
         )
+        # 红灯在状态更新这一侧检测：它属于「这一轮对方做错了什么」，
+        # 和情绪冲击一样是对状态的输入，而不是对回复的修饰。
+        red_flags = self.redflag_detector.detect(content, relation_before.level)
         relation_after = tick(
             relation_before.model_copy(deep=True),
             is_deep=is_deep_turn(content),
             disclosed=is_self_disclosure(content),
             resonated=affect_after.pad.distance(affect_before.pad) >= 0.1,
+            conflict=bool(red_flags),
         )
-        return affect_after, relation_after, impacts
+        return affect_after, relation_after, impacts, [h.brief for h in red_flags]
 
     def _history_messages(self, turns: list[Turn]) -> list[dict[str, str]]:
         return [{"role": t.role, "content": t.content} for t in turns if t.role in ("user", "assistant")]
@@ -324,7 +337,12 @@ class Orchestrator:
             affect_before=state.affect_before.pad.model_dump(),
             affect_after=state.affect.pad.model_dump(),
             impacts=[i.model_dump() for i in state.impacts],
-            relation={"level": state.relation.level, "intimacy": state.relation.intimacy},
+            relation={
+                "level": state.relation.level,
+                "intimacy": state.relation.intimacy,
+                "unresolved_conflicts": state.relation.unresolved_conflicts,
+                "red_flags": state.red_flags,
+            },
             tokens_by_block=state.prompt.tokens_by_block,
             prompt=state.prompt.system,
         )
