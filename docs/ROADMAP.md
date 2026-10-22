@@ -55,3 +55,53 @@
 - M1：SSE HTTP 服务（`src/linger/server/app.py`），把 `send_message` 暴露为 `/v1/sessions/{id}/messages`
 - M1：记忆管理 API（看/改/删/导出），trace 回溯接口 `/v1/traces/{turn_id}`
 - M1：情绪可视化事件（前端头像/气泡跟随情绪）
+
+## M1 验收清单（HTTP 服务层）
+
+> 判据必须**能证明会失败**：每一条都能用一段代码/命令复现「不满足时红」。
+> 与 M0 一样，验收不靠自述，靠独立跑。
+
+### A. 入口与契约（当前必然失败项）
+
+- [ ] `src/linger/server/app.py` 存在，且提供 `main()` 函数
+      （`pyproject.toml` 已声明 `linger = "linger.server.app:main"`，入口缺失即为失败）
+- [ ] `python -c "from linger.server.app import app"` 退出码 0
+- [ ] `GET /health` 返回 200，且 body 含 `status` 字段
+- [ ] 未修改 `pyproject.toml`（依赖已在其中：`fastapi` / `uvicorn` / `httpx`）
+- [ ] 未修改 `models.py` / `storage/base.py` / `config.py` / `docs/ARCHITECTURE.md`
+
+### B. 会话与消息（核心链路）
+
+- [ ] `POST /v1/personas` 能从模板实例化人格，返回 201 或 200，body 含 `id` 与 `name`
+- [ ] `POST /v1/sessions` 能创建会话，返回 body 含 `session_id`
+- [ ] `POST /v1/sessions/{id}/messages` 以 **SSE** 流式返回
+      （响应头 `content-type` 含 `text/event-stream`）
+- [ ] SSE 事件顺序为 `thinking → affect → delta* → done`
+- [ ] 事件行格式为 `event: <type>` + `data: <json>`，且 `data` 内含 `type` 字段
+- [ ] `done` 事件的 data 含 `turn_id` / `used_memories` / `state` / `usage` 四要素
+- [ ] `state` 内含 `affect` / `relation` / `red_flags` / `toxic_signals`
+- [ ] 会话不存在时返回 404（不是 500）
+- [ ] 空消息内容返回 422 或 400（不是静默接受）
+
+### C. 记忆管理与回溯
+
+- [ ] `GET /v1/sessions/{id}/memories` 返回该会话人格的记忆列表
+- [ ] `DELETE /v1/memories/{memory_id}` 可删除记忆，删除后再查为 404
+- [ ] `GET /v1/sessions/{id}/memories/export` 可导出（JSON 或 Markdown）
+- [ ] `GET /v1/traces/{turn_id}` 返回该轮 trace，含 `query` / `candidates` / `passed_gate` / `selected` / `tokens_by_block`
+- [ ] 记忆不存在时返回 404
+
+### D. 可运行性
+
+- [ ] `python -m pytest` 退出码 0，且测试数 > 69（M1 新增测试）
+- [ ] 新增 `tests/test_api.py`，覆盖 A/B/C 全部条目
+- [ ] 免密钥可跑（默认 `LINGER_LLM=mock`）
+- [ ] `uvicorn linger.server.app:app` 可启动（不要求真跑，只要求能 import + 建 app）
+- [ ] 干净克隆（`git clone` + `pip install -e .`）后 pytest 通过
+
+### E. 范围不越界
+
+- [ ] 新增文件限于：`src/linger/server/app.py`、`tests/test_api.py`（及可选的 `src/linger/server/` 下辅助模块）
+- [ ] 未修改 `src/linger/social/` `src/linger/memory/` `src/linger/affect/` `src/linger/relation/` `src/linger/compose/` `src/linger/persona/`
+- [ ] 未修改 `src/linger/orchestrator.py`（M0 已定稿的流水线顺序是契约）
+- [ ] 未引入 `pyproject.toml` 之外的新第三方依赖
