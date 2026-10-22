@@ -681,7 +681,7 @@ def can_level_up(level, intimacy, days_since_first, deep_turns, resonance_events
 **三个消费方**：
 
 1. **生成层（已实现）**：编译器新增 `social` 块，按关系等级映射到阶段，注入「不要做 / 可以这样做」行为边界。负面优先（雷区比甜点更能防止出戏）。
-2. **关系引擎（派工中）**：红灯检测——用户输入命中负面清单关键词时，`unresolved_conflicts += 1`，连续触发会压低亲密度（`intimacy_score` 已含 `- 4 * unresolved_conflicts`）。
+2. **关系引擎（已实现）**：红灯检测——`RedFlagDetector` 识别用户输入是否命中负面清单关键词（10 类行为：打探收入/外貌评判/打探前任/越界身体接触/查户口/深夜打扰/敷衍冷淡/空头承诺/情绪倒垃圾/轻视贬低），命中时 `unresolved_conflicts += 1`；连续触发会压低亲密度（`intimacy_score` 含 `- 4 * unresolved_conflicts`），攒够 3 次（`BLOCKING_CONFLICTS`）关系卡住不再升级。同时 `ai_boundaries()` 生成「AI 绝不做的 8 类行为」注入编译器，视角已从「他打量你」转换为「不要打量对方」。
 3. **场景运行时（后续）**：正面清单作为「初遇 / 升温」剧本的节拍来源，让 AI 在正确阶段做正确的事。
 
 **为什么放在认知层而不是生成层**：知识库是**可查询的状态无关知识**，不是 prompt 文本。放认知层意味着任何引擎都能消费它（关系引擎查红灯、情绪引擎查触发点、编译器查边界），而不是只有编译器能读。
