@@ -32,7 +32,8 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from ..config import settings
@@ -41,6 +42,9 @@ from ..memory.embedding import get_embedder
 from ..orchestrator import Orchestrator
 from ..storage.base import Repository
 from ..storage.sqlite import SQLiteRepository
+
+# 前端静态资源目录（index.html / app.js / style.css）
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 # --------------------------------------------------------------------------- #
 # 请求体
@@ -392,6 +396,18 @@ def create_app(
         if trace is None:
             raise HTTPException(status_code=404, detail=f"trace 不存在: {turn_id}")
         return trace
+
+    # ------------------------------------------------------------------ #
+    # 前端（最小可跑界面）
+    # ------------------------------------------------------------------ #
+    # 刻意不做构建链：三个静态文件，无 CDN、无框架、无打包。
+    # 这一层的目的是「打开就能有感觉」，不是工程完备。
+    if _STATIC_DIR.is_dir():
+        app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+        @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+        def index() -> str:
+            return (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
     return app
 

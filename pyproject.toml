@@ -34,7 +34,8 @@ linger = "linger.server.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-linger = ["templates/personas/*.yaml"]
+# 模板与静态资源随包安装；glob 空匹配不报错，所以 scenarios/ 可以先留位
+linger = ["templates/personas/*.yaml", "templates/scenarios/*.yaml", "server/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

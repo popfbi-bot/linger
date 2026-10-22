@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linger · 灵犀</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="dot"></span>
+    <strong>灵犀</strong>
+    <span class="muted">Linger · 状态引擎</span>
+  </div>
+  <div class="topbar-right">
+    <span id="conn-state" class="pill pill-idle">未连接</span>
+    <button id="btn-reset" class="btn-ghost" title="重新开始一个会话">重开</button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- ───────────── 左栏：人格 / 情绪 / 关系 ───────────── -->
+  <aside class="col col-left">
+
+    <section class="card">
+      <h2>人格</h2>
+      <p class="hint">选一个模板开始。人格是库里的一行，不是 prompt 里的一段话。</p>
+      <div id="persona-list" class="persona-list">
+        <p class="muted small">加载中…</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>她此刻的情绪</h2>
+      <div id="affect-display" class="affect-display">
+        <div id="affect-badge" class="affect-badge is-neutral">
+          <span id="affect-label">中性</span>
+        </div>
+        <div class="pad-bars">
+          <div class="pad-row"><span class="pad-name">愉悦</span><div class="bar"><i id="pad-p"></i></div></div>
+          <div class="pad-row"><span class="pad-name">唤醒</span><div class="bar"><i id="pad-a"></i></div></div>
+          <div class="pad-row"><span class="pad-name">掌控</span><div class="bar"><i id="pad-d"></i></div></div>
+        </div>
+      </div>
+      <p class="hint">情绪不是装饰：它会改变回复长度、提问频率和表情密度。</p>
+    </section>
+
+    <section class="card">
+      <h2>关系</h2>
+      <div class="relation-line">
+        <span class="rel-level" id="rel-level">—</span>
+        <span class="muted small" id="rel-intimacy"></span>
+      </div>
+      <p class="hint">关系只能靠时间和深度累积，不能靠高频刷。</p>
+    </section>
+
+  </aside>
+
+  <!-- ───────────── 中栏：对话 ───────────── -->
+  <section class="col col-center">
+    <div class="card chat-card">
+      <div id="messages" class="messages">
+        <div class="empty-state" id="empty-state">
+          <p class="empty-title">还没有开始</p>
+          <p class="muted small">在左边选一个人格，然后说第一句话。<br>她会记得你说过的事。</p>
+        </div>
+      </div>
+      <div id="thinking-strip" class="thinking-strip" hidden>
+        <span class="spinner"></span><span id="thinking-text">正在回忆…</span>
+      </div>
+      <form id="composer" class="composer">
+        <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）" disabled></textarea>
+        <button id="btn-send" class="btn-primary" disabled>发送</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- ───────────── 右栏：记忆 / trace ───────────── -->
+  <aside class="col col-right">
+
+    <section class="card">
+      <h2>她记得的事 <span id="memory-count" class="count">0</span></h2>
+      <div id="memory-list" class="memory-list">
+        <p class="muted small">聊过之后，这里会出现她记住的事。</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>这一轮发生了什么</h2>
+      <div id="trace-panel" class="trace-panel">
+        <p class="muted small">trace 会显示：召回了几条候选、过了闸门几条、注入了几条、token 花在哪。</p>
+      </div>
+    </section>
+
+  </aside>
+
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

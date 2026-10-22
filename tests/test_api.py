@@ -19,33 +19,11 @@ from starlette.testclient import TestClient as _TC  # noqa: F401  (确认 starle
 
 from linger.server.app import create_app
 
+# 夹具 `client` / `session_id` 见 conftest.py（与 test_frontend.py 共用）
+
 # --------------------------------------------------------------------------- #
-# 夹具
+# SSE 读取工具
 # --------------------------------------------------------------------------- #
-
-
-@pytest.fixture
-def client(repo, persona):
-    """带临时 SQLite 的测试客户端。
-
-    persona fixture 已经把 linxi 人格存进 repo。
-    LLM 与嵌入器用假件：免密钥、免网络、确定性。
-    """
-    from _fakes import FakeEmbedder, FakeLLM
-
-    app = create_app(repo=repo, llm=FakeLLM(), embedder=FakeEmbedder())
-    with TestClient(app) as c:
-        yield c
-
-
-@pytest.fixture
-def session_id(client, persona) -> str:
-    resp = client.post(
-        "/v1/sessions",
-        json={"persona_id": persona.id, "user_id": "u_api"},
-    )
-    assert resp.status_code == 201
-    return resp.json()["session_id"]
 
 
 def _read_sse(client, session_id: str, content: str = "今天面试砸了。") -> list[tuple[str, dict]]:

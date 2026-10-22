@@ -47,3 +47,33 @@ def fake_embedder() -> FakeEmbedder:
 @pytest.fixture
 def real_embedder() -> HashEmbedder:
     return HashEmbedder(256)
+
+
+# --------------------------------------------------------------------------- #
+# HTTP 客户端（test_api.py 与 test_frontend.py 共用）
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def client(repo: SQLiteRepository, persona: PersonaCard):
+    """带临时 SQLite 的测试客户端。
+
+    persona fixture 已经把 linxi 人格存进 repo。
+    LLM 与嵌入器用假件：免密钥、免网络、确定性。
+    """
+    from fastapi.testclient import TestClient
+    from _fakes import FakeLLM
+
+    from linger.server.app import create_app
+
+    app = create_app(repo=repo, llm=FakeLLM(), embedder=FakeEmbedder())
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def session_id(client, persona: PersonaCard) -> str:
+    resp = client.post(
+        "/v1/sessions",
+        json={"persona_id": persona.id, "user_id": "u_api"},
+    )
+    assert resp.status_code == 201
+    return resp.json()["session_id"]
