@@ -666,7 +666,7 @@ def can_level_up(level, intimacy, days_since_first, deep_turns, resonance_events
 
 **方案**：把「人与人如何相处」的行为知识做成认知层的一个独立模块——`src/linger/social/`。它不产生状态，只提供**行为先验**给关系引擎、情绪引擎和生成层。
 
-**语料来源**（五份清单，已入库）：
+**语料来源**（六份清单，已入库）：
 
 | 文件 | 极性 | 条数 | 对应关系阶段 |
 |---|---|---|---|
@@ -675,14 +675,16 @@ def can_level_up(level, intimacy, days_since_first, deep_turns, resonance_events
 | 暗生情愫_正面清单 | positive | 240 | 升温（level 2~3） |
 | 相处雷区_负面清单 | negative | 215 | 升温 + 相处（level 2~5） |
 | 人生阶段陪伴需求与角色 | companion | 208 | 全阶段 |
+| 陪伴缺失与有毒关系_负面清单 | negative（companion_negative 维度） | 180 | 全阶段（上篇按人生阶段，下篇按有毒关系类型） |
 
-**索引结构**：每个条目被解析成 `SocialItem(corpus, stage, polarity, text, section, red_flag)`，共 **1113 条**。按 `stage`（初遇/升温/相处/陪伴）与 `polarity`（positive/negative/companion）索引。
+**索引结构**：每个条目被解析成 `SocialItem(corpus, stage, polarity, text, section, red_flag, dimension, toxic)`，共 **1293 条**。按 `stage`（初遇/升温/相处/陪伴）与 `polarity`（positive/negative/companion）索引；第六份语料挂在独立的 `dimension="companion_negative"` 维度下，额外按人生阶段（胎儿期~老年期）与有毒关系类型（亲情/友情/职场/亲密/其他）索引。
 
-**三个消费方**：
+**四个消费方**：
 
 1. **生成层（已实现）**：编译器新增 `social` 块，按关系等级映射到阶段，注入「不要做 / 可以这样做」行为边界。负面优先（雷区比甜点更能防止出戏）。
 2. **关系引擎（已实现）**：红灯检测——`RedFlagDetector` 识别用户输入是否命中负面清单关键词（10 类行为：打探收入/外貌评判/打探前任/越界身体接触/查户口/深夜打扰/敷衍冷淡/空头承诺/情绪倒垃圾/轻视贬低），命中时 `unresolved_conflicts += 1`；连续触发会压低亲密度（`intimacy_score` 含 `- 4 * unresolved_conflicts`），攒够 3 次（`BLOCKING_CONFLICTS`）关系卡住不再升级。同时 `ai_boundaries()` 生成「AI 绝不做的 8 类行为」注入编译器，视角已从「他打量你」转换为「不要打量对方」。
 3. **场景运行时（后续）**：正面清单作为「初遇 / 升温」剧本的节拍来源，让 AI 在正确阶段做正确的事。
+4. **有毒信号识别（已实现）**：`ToxicSignalDetector` 从用户倾诉中识别「情感勒索 / 否定打压 / 冷暴力 / 忽视」等信号，进入 `done` 事件的 `toxic_signals` 字段，让 AI 的回应更有洞察。**只提示，不惩罚**——绝不计入 `unresolved_conflicts`，不参与关系降级。上篇按人生阶段索引可供「陪伴模式」识别用户所处阶段的陪伴缺失，下篇按有毒关系类型索引可供「关系诊断」场景使用。
 
 **为什么放在认知层而不是生成层**：知识库是**可查询的状态无关知识**，不是 prompt 文本。放认知层意味着任何引擎都能消费它（关系引擎查红灯、情绪引擎查触发点、编译器查边界），而不是只有编译器能读。
 
