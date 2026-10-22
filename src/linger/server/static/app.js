@@ -16,6 +16,9 @@
   // ───────────────────────────── 状态 ─────────────────────────────
 
   const state = {
+    templateId: null,     // 当前选中的模板 id（人格未实例化前只有它）
+    scenarioId: null,     // 当前选中的场景 id；null = 普通对话
+    scenarioBeats: {},    // beat id → goal，用于进度面板显示
     personaId: null,
     sessionId: null,
     personaName: "",
@@ -31,6 +34,10 @@
 
   const el = {
     personaList: $("persona-list"),
+    scenarioList: $("scenario-list"),
+    sceneCount: $("scene-count"),
+    sceneProgressCard: $("scene-progress-card"),
+    sceneProgress: $("scene-progress"),
     messages: $("messages"),
     emptyState: $("empty-state"),
     input: $("input"),
@@ -435,7 +442,12 @@
             ? `<div class="persona-sample">「${escapeHtml(t.sample)}」</div>`
             : "");
 
-        btn.addEventListener("click", () => startSession(t.id, t.name || t.id, btn));
+        btn.addEventListener("click", () => {
+          state.templateId = t.id;
+          state.personaName = t.name || t.id;
+          highlight(el.personaList, btn);
+          startSession();
+        });
         el.personaList.appendChild(btn);
       }
     } catch (err) {
@@ -445,8 +457,111 @@
     }
   }
 
-  async function startSession(templateId, name, btn) {
-    if (state.busy) return;
+  // ───────────────────────────── 场景选择 ─────────────────────────────
+
+  async function loadScenarios() {
+    try {
+      const data = await api("/v1/scenarios");
+      const scenarios = data.scenarios || [];
+      el.scenarioList.innerHTML = "";
+      el.sceneCount.textContent = String(scenarios.length);
+
+      // 「不设定场景」永远排第一：普通对话是最常用的
+      const noneBtn = document.createElement("button");
+      noneBtn.className = "scenario-item is-none is-active";
+      noneBtn.type = "button";
+      noneBtn.innerHTML =
+        '<div class="scenario-title"><span>不设定场景</span><span class="scenario-beats">普通对话</span></div>' +
+        '<div class="scenario-setting">没有剧本，就是日常。她也还是她。</div>';
+      noneBtn.addEventListener("click", () => {
+        state.scenarioId = null;
+        state.scenarioBeats = {};
+        highlight(el.scenarioList, noneBtn);
+        el.sceneProgressCard.hidden = true;
+        if (state.templateId) startSession();
+      });
+      el.scenarioList.appendChild(noneBtn);
+
+      for (const s of scenarios) {
+        const btn = document.createElement("button");
+        btn.className = "scenario-item";
+        btn.type = "button";
+        btn.dataset.scenarioId = s.id;
+        btn.innerHTML =
+          `<div class="scenario-title"><span>${escapeHtml(s.title || s.id)}</span>` +
+          `<span class="scenario-beats">${s.beat_count ?? "?"} 节拍</span></div>` +
+          `<div class="scenario-setting">${escapeHtml(s.setting || "")}</div>`;
+
+        btn.addEventListener("click", async () => {
+          state.scenarioId = s.id;
+          highlight(el.scenarioList, btn);
+          await cacheBeats(s.id);
+          if (state.templateId) startSession();
+          else showSceneProgress(null);
+        });
+        el.scenarioList.appendChild(btn);
+      }
+    } catch (err) {
+      el.scenarioList.innerHTML =
+        `<p class="memory-empty">场景加载失败：${escapeHtml(err.message)}</p>`;
+    }
+  }
+
+  /** 拉一次场景详情，缓存 beat id → goal，进度面板要用 */
+  async function cacheBeats(scenarioId) {
+    try {
+      const detail = await api(`/v1/scenarios/${scenarioId}`);
+      state.scenarioBeats = {};
+      for (const b of detail.beats || []) {
+        state.scenarioBeats[b.id] = b.goal;
+      }
+      showSceneProgress({ done_beats: [], pending_beats: Object.keys(state.scenarioBeats) });
+    } catch (err) {
+      console.warn("场景详情加载失败", err);
+      state.scenarioBeats = {};
+    }
+  }
+
+  function showSceneProgress(sceneState) {
+    if (!state.scenarioId) {
+      el.sceneProgressCard.hidden = true;
+      return;
+    }
+    el.sceneProgressCard.hidden = false;
+
+    const done = new Set((sceneState && sceneState.done_beats) || []);
+    const ids = Object.keys(state.scenarioBeats);
+    if (!ids.length) {
+      elsafeSet(el.sceneProgress, '<p class="memory-empty">加载中…</p>');
+      return;
+    }
+
+    el.sceneProgress.innerHTML = "";
+    for (const id of ids) {
+      const isDone = done.has(id);
+      const row = document.createElement("div");
+      row.className = "beat-row " + (isDone ? "is-done" : "is-pending");
+      row.innerHTML =
+        `<span class="beat-mark">✓</span>` +
+        `<span class="beat-text">${escapeHtml(state.scenarioBeats[id])}</span>`;
+      el.sceneProgress.appendChild(row);
+    }
+  }
+
+  function elsafeSet(node, html) {
+    node.innerHTML = html;
+  }
+
+  function highlight(container, activeBtn) {
+    for (const b of container.querySelectorAll("button")) {
+      b.classList.toggle("is-active", b === activeBtn);
+    }
+  }
+
+  // ───────────────────────────── 会话 ─────────────────────────────
+
+  async function startSession() {
+    if (state.busy || !state.templateId) return;
     state.busy = true;
     setConn("准备中…", "pill-busy");
 
@@ -454,25 +569,23 @@
       // 1. 实例化人格（模板 → 库里的行）
       const persona = await api("/v1/personas", {
         method: "POST",
-        body: JSON.stringify({ template_id: templateId }),
+        body: JSON.stringify({ template_id: state.templateId }),
       });
 
-      // 2. 开一个会话
+      // 2. 开一个会话（带场景，如果选了）
+      const body = {
+        persona_id: persona.id,
+        user_id: "u_web",   // 浏览器端单用户；多用户时换成登录态
+      };
+      if (state.scenarioId) body.scenario_id = state.scenarioId;
+
       const session = await api("/v1/sessions", {
         method: "POST",
-        body: JSON.stringify({
-          persona_id: persona.id,
-          user_id: "u_web",   // 浏览器端单用户；多用户时换成登录态
-        }),
+        body: JSON.stringify(body),
       });
 
       state.personaId = persona.id;
       state.sessionId = session.session_id;
-      state.personaName = name;
-
-      for (const b of el.personaList.querySelectorAll(".persona-item")) {
-        b.classList.toggle("is-active", b === btn);
-      }
 
       // 3. 清空并解锁输入
       el.messages.innerHTML = "";
@@ -483,8 +596,9 @@
       el.send.disabled = false;
       el.input.focus();
 
-      setConn(`与${name}对话中`, "pill-live");
-      addMessage("ai", `（${name}在这里。）`);
+      setConn(`与${state.personaName}对话中`, "pill-live");
+      showSceneProgress({ done_beats: [], pending_beats: Object.keys(state.scenarioBeats) });
+      addMessage("ai", `（${state.personaName}在这里。）`);
     } catch (err) {
       showError("开始会话失败：" + err.message);
       setConn("未连接", "pill-error");
@@ -585,6 +699,10 @@
             if (doneState.relation) {
               setRelation(doneState.relation.level, doneState.relation.intimacy);
             }
+            // 场景节拍进度：done 里带 done_beats / pending_beats
+            if (doneState.scenario && doneState.scenario.scenario_id) {
+              showSceneProgress(doneState.scenario);
+            }
             break;
           default:
             break;
@@ -669,12 +787,19 @@
     for (const b of el.personaList.querySelectorAll(".persona-item")) {
       b.classList.remove("is-active");
     }
+    // 场景保留在「不设定」，进度清空
+    const noneBtn = el.scenarioList.querySelector(".is-none");
+    if (noneBtn) highlight(el.scenarioList, noneBtn);
+    state.scenarioId = null;
+    state.scenarioBeats = {};
+    el.sceneProgressCard.hidden = true;
     setConn("未连接", "pill-idle");
   });
 
   // ───────────────────────────── 启动 ─────────────────────────────
 
   loadTemplates();
+  loadScenarios();
 
   // 页面打开时顺手探一下服务是否活着
   fetch("/health")

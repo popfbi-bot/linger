@@ -199,6 +199,97 @@ body {
   font-style: italic;
 }
 
+/* ───────────── 场景选择 ───────────── */
+
+.scenario-list { display: flex; flex-direction: column; gap: 8px; }
+
+.scenario-item {
+  text-align: left;
+  font: inherit;
+  background: var(--surface-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  cursor: pointer;
+  transition: all .15s ease;
+  color: inherit;
+  position: relative;
+}
+.scenario-item:hover {
+  border-color: #7a93a8;
+  background: #f4f8fb;
+  transform: translateY(-1px);
+}
+.scenario-item.is-active {
+  border-color: #7a93a8;
+  background: #f0f6fa;
+  box-shadow: inset 0 0 0 1px #7a93a8;
+}
+
+.scenario-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.scenario-beats {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+.scenario-setting {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  line-height: 1.5;
+}
+
+/* 「不设定场景」是一个特殊项：它代表普通对话，不是空白 */
+.scenario-item.is-none {
+  border-style: dashed;
+}
+.scenario-item.is-none .scenario-title { font-weight: 500; color: var(--text-dim); }
+
+/* ───────────── 场景进度 ───────────── */
+
+.scene-progress { display: flex; flex-direction: column; gap: 6px; }
+
+.beat-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 4px 0;
+}
+
+.beat-mark {
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  margin-top: 1px;
+  color: transparent;
+  transition: all .3s ease;
+}
+
+.beat-row.is-done .beat-mark {
+  background: #4a7c59;
+  border-color: #4a7c59;
+  color: #fff;
+}
+.beat-row.is-done .beat-text { color: var(--muted); text-decoration: line-through; }
+.beat-row.is-pending .beat-text { color: var(--text-dim); }
+
+
 /* ───────────── 情绪指示器 ───────────── */
 
 .affect-display { display: flex; flex-direction: column; gap: 12px; }

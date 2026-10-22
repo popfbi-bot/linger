@@ -84,6 +84,28 @@ def test_five_sections_present(html):
     assert 'id="trace-panel"' in html, "缺 trace 面板"
 
 
+def test_scenario_ui_present(html):
+    """场景 UI：选择区 + 进度面板。
+
+    场景运行时做得再好，页面上没入口，用户就用不到。
+    """
+    assert 'id="scenario-list"' in html, "缺场景选择区"
+    assert 'id="scene-progress"' in html, "缺场景进度面板"
+    assert 'id="scene-progress-card"' in html
+
+
+def test_scenario_endpoints_called(js):
+    """JS 必须调用场景端点，否则场景选不了、进度也显示不出来。"""
+    assert "/v1/scenarios/" in js, "JS 没拉场景详情（进度面板需要 beat goal）"
+    assert "/v1/scenarios" in js, "JS 没拉场景列表"
+    assert "scenario_id" in js, "JS 建会话时没传 scenario_id"
+
+
+def test_scenario_none_option(js):
+    """必须有「不设定场景」这一项——普通对话是最常用的入口。"""
+    assert "不设定场景" in js
+
+
 def test_input_and_send_present(html):
     assert 'id="input"' in html
     assert 'id="btn-send"' in html
