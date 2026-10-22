@@ -103,6 +103,62 @@
       <div id="scenario-list" class="scenario-list">
         <p class="muted small">加载中…</p>
       </div>
+
+      <!-- 自建场景 -->
+      <div class="persona-create">
+        <button type="button" id="btn-show-scenario-create" class="persona-create-toggle">
+          + 自己写一个场景
+        </button>
+        <div id="scenario-create-panel" class="persona-create-panel" hidden>
+          <input
+            id="sc-title"
+            class="scenario-input"
+            type="text"
+            placeholder="标题：雨夜天台"
+            maxlength="60"
+          />
+          <input
+            id="sc-id"
+            class="scenario-input"
+            type="text"
+            placeholder="代号：rainy_roof（留空自动生成）"
+            maxlength="32"
+          />
+          <textarea
+            id="sc-setting"
+            class="persona-desc"
+            rows="2"
+            placeholder="设定：深夜写字楼天台，下着雨，她躲在檐下抽一根没点的烟。"
+            maxlength="2000"
+          ></textarea>
+          <textarea
+            id="sc-opening"
+            class="persona-desc"
+            rows="2"
+            placeholder="开场白：雨声盖住了城市的噪音。她抬头看了你一眼，没说话。"
+            maxlength="2000"
+          ></textarea>
+          <input
+            id="sc-role"
+            class="scenario-input"
+            type="text"
+            placeholder="你在这个场景里是谁：同楼加班的同事"
+            maxlength="200"
+          />
+          <textarea
+            id="sc-beats"
+            class="persona-desc"
+            rows="3"
+            placeholder="节拍（每行一个，这些是「还没发生的事」）：
+你们第一次真正说上话
+她提起辞职的念头"
+          ></textarea>
+          <div class="persona-create-actions">
+            <button type="button" id="btn-create-scenario" class="btn-secondary">创建</button>
+            <span id="sc-hint" class="muted small"></span>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="card" id="scene-progress-card" hidden>

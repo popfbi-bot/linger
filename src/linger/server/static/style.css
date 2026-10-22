@@ -302,6 +302,26 @@ body {
   margin-top: 6px;
 }
 
+/* ───────────── 自建场景（M3-F） ───────────── */
+
+.scenario-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* 只在自建场景面板里加行距——不去动生成面板（M3-A）的既有间距 */
+#scenario-create-panel > .scenario-input,
+#scenario-create-panel > .persona-desc {
+  margin-bottom: 6px;
+}
+
 .btn-secondary {
   font: inherit;
   font-size: 12px;

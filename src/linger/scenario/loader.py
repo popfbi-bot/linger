@@ -1,6 +1,11 @@
 """从 templates/scenarios/*.yaml 加载场景。
 
 与 persona/templates.py 同一套做法：新增场景只需放一个 yaml，不改代码。
+
+**两处来源，用户优先**：
+    · `~/.linger/scenarios/`  —— 用户自建（可写，`LINGER_SCENARIO_DIR` 可覆盖）
+    · 包内 `templates/scenarios/` —— 内置场景（只读，装成包后不可写）
+同 id 时用户场景覆盖内置——用户改过的版本应该生效。
 """
 
 from __future__ import annotations
@@ -11,12 +16,16 @@ from typing import Any
 import yaml
 
 from .models import Scenario
-
-_SCENARIO_DIR = Path(__file__).resolve().parent.parent / "templates" / "scenarios"
+from .writer import builtin_scenario_dir, user_scenario_dir
 
 
 def _paths() -> list[Path]:
-    return sorted(_SCENARIO_DIR.glob("*.yaml")) if _SCENARIO_DIR.exists() else []
+    """两处目录的 yaml；用户目录在前（优先）。"""
+    out: list[Path] = []
+    for d in (user_scenario_dir(), builtin_scenario_dir()):
+        if d.exists():
+            out.extend(sorted(d.glob("*.yaml")))
+    return out
 
 
 def _brief(path: Path, data: dict[str, Any]) -> dict[str, Any]:
@@ -30,10 +39,15 @@ def _brief(path: Path, data: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_scenarios() -> list[dict[str, Any]]:
-    """场景摘要清单（供 GET /v1/scenarios）。"""
+    """场景摘要清单（供 GET /v1/scenarios）。同 id 只出一次（用户版覆盖内置版）。"""
     out: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for path in _paths():
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        sid = data.get("id") or path.stem
+        if sid in seen:
+            continue
+        seen.add(sid)
         out.append(_brief(path, data))
     return out
 
@@ -41,13 +55,15 @@ def list_scenarios() -> list[dict[str, Any]]:
 def load_scenario(scenario_id: str) -> Scenario:
     """按 id 加载完整场景；不存在抛 FileNotFoundError。
 
-    id 先按文件名匹配，再回退到扫描（yaml 里的 id 与文件名不一致时也不会失效）。
+    先按文件名在「用户目录 → 内置目录」里找，再回退到扫描
+    （yaml 里的 id 与文件名不一致时也不会失效）。
     """
-    path = _SCENARIO_DIR / f"{scenario_id}.yaml"
-    if path.exists():
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        data.setdefault("id", scenario_id)
-        return Scenario.model_validate(data)
+    for base in (user_scenario_dir(), builtin_scenario_dir()):
+        path = base / f"{scenario_id}.yaml"
+        if path.exists():
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            data.setdefault("id", scenario_id)
+            return Scenario.model_validate(data)
 
     for candidate in _paths():
         data = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}

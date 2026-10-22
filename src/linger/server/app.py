@@ -176,6 +176,53 @@ class CreateSessionRequest(BaseModel):
         return v.strip()
 
 
+class CreateScenarioRequest(BaseModel):
+    """用户自建场景。
+
+    `beats` 收 `list[Any]` 而不是 `list[Beat]`：允许「只写一句描述」的简写
+    （`["第一次见面"]`）。化简逻辑放在 `scenario/writer.py` 的 `_normalize`，
+    HTTP 层不承担「两种写法都认」的复杂度。
+    """
+
+    id: str = Field(
+        ...,
+        min_length=2,
+        max_length=32,
+        description="小写字母/数字/下划线，字母开头，如 rainy_roof",
+    )
+    title: str = Field(..., min_length=1, max_length=60)
+    world: str = Field(default="", max_length=200)
+    setting: str = Field(default="", max_length=2000)
+    opening_narration: str = Field(default="", max_length=2000)
+    user_role: str = Field(default="", max_length=200)
+    beats: list[Any] = Field(
+        default_factory=list,
+        description='[{"goal": "...", "trigger": ["..."]}] 或 ["..."] 两种写法都收',
+    )
+    constraints: list[str] = Field(default_factory=list)
+    exit_conditions: list[str] = Field(default_factory=list)
+    overwrite: bool = Field(default=False, description="同 id 已存在时是否覆盖")
+
+    @field_validator("id")
+    @classmethod
+    def _id_format(cls, v: str) -> str:
+        """id 要能当文件名用。格式不对在这里挡掉，别等写文件时才炸。"""
+        from ..scenario.writer import SCENARIO_ID_RE
+
+        v = v.strip()
+        if not SCENARIO_ID_RE.match(v):
+            raise ValueError("id 只能用小写字母、数字、下划线，2~32 位，且以字母开头")
+        return v
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("标题不能为空白")
+        return v
+
+
 class SendMessageRequest(BaseModel):
     content: str = Field(..., min_length=1, description="用户这一轮说的话")
 
@@ -365,7 +412,12 @@ def _scenario_detail(scenario) -> dict[str, Any]:
         "setting": scenario.setting,
         "opening_narration": scenario.opening_narration,
         "user_role": scenario.user_role,
-        "beats": [{"id": b.id, "goal": b.goal} for b in scenario.beats],
+        # trigger 也返回：自建场景后用户要能确认「我写的触发词存进去了」
+        # （前端进度面板只用 id/goal，多这两个字段不增加它的负担）
+        "beats": [
+            {"id": b.id, "goal": b.goal, "trigger": list(b.trigger), "done": b.done}
+            for b in scenario.beats
+        ],
         "constraints": scenario.constraints,
         "exit_conditions": scenario.exit_conditions,
     }
@@ -512,6 +564,40 @@ def create_app(
             return _scenario_detail(load_scenario(scenario_id))
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"场景不存在: {scenario_id}") from exc
+
+    @app.post("/v1/scenarios", status_code=201)
+    def create_scenario_endpoint(body: CreateScenarioRequest) -> dict[str, Any]:
+        """用户自建场景 → 写成 YAML（落在用户目录，不污染包内资源）。
+
+        错误码分工：
+          · 422 —— 用户填错了（id 格式、标题为空、节拍描述空…）
+          · 409 —— 同 id 已存在且没说要覆盖（让用户自己想清楚是不是改名）
+        """
+        from ..scenario import load_scenario
+        from ..scenario.writer import ScenarioExistsError, ScenarioWriteError, save_scenario
+
+        payload = body.model_dump(exclude={"overwrite"})
+        try:
+            save_scenario(payload, overwrite=body.overwrite)
+        except ScenarioExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ScenarioWriteError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        return _scenario_detail(load_scenario(body.id))
+
+    @app.delete("/v1/scenarios/{scenario_id}")
+    def delete_scenario_endpoint(scenario_id: str) -> dict[str, Any]:
+        """删除**用户自建**场景。内置场景删不掉（返回 404，不是 403——
+        对调用方而言「你删不了它」和「它不在你能删的范围里」是同一件事）。"""
+        from ..scenario.writer import delete_scenario
+
+        if not delete_scenario(scenario_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"用户场景不存在或内置场景不可删: {scenario_id}",
+            )
+        return {"deleted": scenario_id}
 
     # ------------------------------------------------------------------ #
     # 人格

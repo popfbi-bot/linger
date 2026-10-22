@@ -76,6 +76,16 @@
     distillResult: $("distill-result"),
     scenarioList: $("scenario-list"),
     sceneCount: $("scene-count"),
+    scenarioCreatePanel: $("scenario-create-panel"),
+    btnShowScenarioCreate: $("btn-show-scenario-create"),
+    scTitle: $("sc-title"),
+    scId: $("sc-id"),
+    scSetting: $("sc-setting"),
+    scOpening: $("sc-opening"),
+    scRole: $("sc-role"),
+    scBeats: $("sc-beats"),
+    btnCreateScenario: $("btn-create-scenario"),
+    scHint: $("sc-hint"),
     sceneProgressCard: $("scene-progress-card"),
     sceneProgress: $("scene-progress"),
     messages: $("messages"),
@@ -1262,6 +1272,79 @@
         `<p class="memory-empty">场景加载失败：${escapeHtml(err.message)}</p>`;
     }
   }
+
+  // ──────────────────── 自建场景（M3-F） ────────────────────
+
+  function toggleScenarioCreate() {
+    const opening = el.scenarioCreatePanel.hidden;
+    el.scenarioCreatePanel.hidden = !opening;
+    el.btnShowScenarioCreate.textContent = opening
+      ? "− 收起"
+      : "+ 自己写一个场景";
+    if (opening) el.scTitle.focus();
+  }
+
+  /** 代号留空就自动生一个。用户只关心「叫什么」，不该被 slug 规则拦住。 */
+  function autoScenarioId() {
+    return "sc_" + Math.random().toString(36).slice(2, 8);
+  }
+
+  function setScHint(text) {
+    el.scHint.textContent = text || "";
+  }
+
+  async function createScenario() {
+    const title = el.scTitle.value.trim();
+    if (!title) {
+      setScHint("先给场景起个标题。");
+      return;
+    }
+
+    // 节拍：一行一个。用户不需要懂 YAML 结构。
+    const beats = el.scBeats.value
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const body = {
+      id: el.scId.value.trim() || autoScenarioId(),
+      title,
+      setting: el.scSetting.value.trim(),
+      opening_narration: el.scOpening.value.trim(),
+      user_role: el.scRole.value.trim(),
+      beats,
+    };
+
+    el.btnCreateScenario.disabled = true;
+    setScHint("正在创建…");
+    try {
+      const created = await api("/v1/scenarios", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      // 收面板 + 清表单
+      el.scenarioCreatePanel.hidden = true;
+      el.btnShowScenarioCreate.textContent = "+ 自己写一个场景";
+      for (const node of [el.scTitle, el.scId, el.scSetting, el.scOpening, el.scRole, el.scBeats]) {
+        node.value = "";
+      }
+      await loadScenarios();
+      setScHint(`已创建「${created.title}」`);
+    } catch (err) {
+      // 409 是「代号撞了」，提示改成换个代号比原样抛错误码有用
+      const msg = String(err.message || err);
+      setScHint(
+        msg.startsWith("409")
+          ? "这个代号已被占用，换一个（或者把代号留空自动生成）。"
+          : "创建失败：" + msg
+      );
+    } finally {
+      el.btnCreateScenario.disabled = false;
+    }
+  }
+
+  el.btnShowScenarioCreate.addEventListener("click", toggleScenarioCreate);
+  el.btnCreateScenario.addEventListener("click", createScenario);
 
   /** 拉一次场景详情，缓存 beat id → goal，进度面板要用 */
   async function cacheBeats(scenarioId) {
