@@ -57,6 +57,8 @@
 
   const el = {
     personaList: $("persona-list"),
+    myPersonaList: $("my-persona-list"),
+    myPersonaCount: $("my-persona-count"),
     personaCreatePanel: $("persona-create-panel"),
     personaDesc: $("persona-desc"),
     btnShowCreate: $("btn-show-create"),
@@ -671,6 +673,129 @@
     }
   }
 
+  // ───────────────────── 我的人格：列表 + 删除（M3-C） ─────────────────────
+  //
+  // 与上面的模板列表是两张不同的东西：
+  //   模板 = 「可以去找谁」（推荐位，2 个，点一下实例化）
+  //   我的人格 = 「已经在的人」（清单，含模板实例化的 + 一句话生成的）
+  // 所以做成同区块的第二个列表，不是 tab ——「造出来的东西在哪」不该再藏在二级入口。
+  //
+  // 删除是软删（后端只把 status 标成 deleted，不动会话与记忆），
+  // 但**语义**是「这个人格不要了」：当前正在聊的那一个被删掉，
+  // 就必须清空对话区并锁住输入，绝不能让用户对着一个已经不存在的人格继续说话。
+
+  async function loadMyPersonas() {
+    try {
+      const data = await api("/v1/personas");
+      renderMyPersonas(data.personas || []);
+    } catch (err) {
+      el.myPersonaList.innerHTML =
+        `<p class="my-persona-empty">人格列表加载失败：${escapeHtml(err.message)}</p>`;
+    }
+  }
+
+  function renderMyPersonas(personas) {
+    el.myPersonaCount.textContent = String(personas.length);
+    el.myPersonaList.innerHTML = "";
+
+    if (!personas.length) {
+      el.myPersonaList.innerHTML =
+        '<p class="my-persona-empty">还没有自己造的角色——上面用一句话造一个。</p>';
+      return;
+    }
+
+    for (const p of personas) {
+      const item = document.createElement("div");
+      item.className = "my-persona-item";
+      item.dataset.personaId = p.id;
+
+      // 主体是按钮：点击直接开会话（openSession 已在 M3-A 抽出，两条入口共用）
+      const openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.className = "my-persona-open";
+      // identity / archetype 有什么显示什么，都没有就不留空行
+      const sub = [p.identity, p.archetype].filter(Boolean).join(" · ");
+      openBtn.innerHTML =
+        `<div class="my-persona-name">${escapeHtml(p.name || p.id)}</div>` +
+        (sub ? `<div class="my-persona-meta">${escapeHtml(sub)}</div>` : "");
+      openBtn.addEventListener("click", async () => {
+        if (state.busy) return;
+        try {
+          await openSession(p.id, p.name || p.id);
+          highlight(el.myPersonaList, item);
+        } catch (err) {
+          showError("打开人格失败：" + (err.message || err));
+        }
+      });
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "my-persona-delete";
+      delBtn.title = "删除这个人格";
+      delBtn.textContent = "删除";
+      delBtn.addEventListener("click", () => deletePersona(p, delBtn));
+
+      item.appendChild(openBtn);
+      item.appendChild(delBtn);
+      el.myPersonaList.appendChild(item);
+
+      if (p.id === state.personaId) item.classList.add("is-active");
+    }
+  }
+
+  async function deletePersona(persona, btn) {
+    const name = persona.name || persona.id;
+    // 二次确认：删除不可从界面撤销（软删只保住了数据，没保住入口）
+    if (!confirm(`删除「${name}」？聊天记录会保留，但这个角色不会再出现在列表里。`)) return;
+
+    btn.disabled = true;
+    btn.textContent = "删除中…";
+    try {
+      await api(`/v1/personas/${encodeURIComponent(persona.id)}`, { method: "DELETE" });
+      // 删的就是当前正在聊的人格 → 不能假装还能继续
+      if (persona.id === state.personaId) lockAfterPersonaDeleted(name);
+      await loadMyPersonas();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "删除";
+      showError("删除失败：" + (err.message || err));
+      // 404（已被删过）也刷新一次：列表与库对齐，别继续显示一个不存在的人格
+      await loadMyPersonas();
+    }
+  }
+
+  /** 当前人格被删之后：清空对话区、锁住输入、明确告诉用户下一步。
+   *
+   * 为什么不保留会话留在屏幕上「只读」：用户会以为还能接着说。
+   * 删人格的语义是「这个人格不要了」，那就把输入关掉，让他重新选。
+   */
+  function lockAfterPersonaDeleted(name) {
+    state.sessionId = null;
+    state.personaId = null;
+    state.lastTurnId = null;
+    state.streamEl = null;
+    state.streamText = "";
+
+    el.messages.innerHTML =
+      '<div class="empty-state" id="empty-state">' +
+      '<p class="empty-title">人格已删除</p>' +
+      `<p class="muted small">「${escapeHtml(name)}」已经不在了。在左边重新选一个，或者再造一个。</p>` +
+      "</div>";
+    el.emptyState = $("empty-state");
+    el.input.value = "";
+    el.input.disabled = true;
+    el.send.disabled = true;
+    renderMemories([]);
+    renderCompanion(null);
+    el.tracePanel.innerHTML =
+      '<p class="muted small">聊一句，这里会显示这一轮的召回与 token 分布。</p>';
+    el.affectBadge.className = "affect-badge is-neutral";
+    el.affectLabel.textContent = "中性";
+    el.relLevel.textContent = "—";
+    el.relIntimacy.textContent = "";
+    setConn("人格已删除，重新选一个", "pill-idle");
+  }
+
   // ───────────────────── 一句话造一个人格（M3-A） ─────────────────────
 
   function toggleCreatePanel() {
@@ -938,6 +1063,8 @@
     el.input.focus();
 
     setConn(`与${personaName}对话中`, "pill-live");
+    // 「我的人格」里的高亮跟着走（新造的人格也要出现在列表里）
+    await loadMyPersonas();
     showSceneProgress({ done_beats: [], pending_beats: Object.keys(state.scenarioBeats) });
     addMessage("ai", `（${personaName}在这里。）`);
     // 陪伴档案：新会话开始时拉一次（可能已有旧档案）
@@ -1144,6 +1271,7 @@
   // ───────────────────────────── 启动 ─────────────────────────────
 
   loadTemplates();
+  loadMyPersonas();
   loadScenarios();
 
   // 页面打开时顺手探一下服务是否活着

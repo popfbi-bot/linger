@@ -29,14 +29,20 @@ class Repository(ABC):
     def save_persona(self, card: PersonaCard) -> None: ...
 
     @abstractmethod
-    def get_persona(self, persona_id: str) -> PersonaCard | None: ...
+    def get_persona(self, persona_id: str) -> PersonaCard | None:
+        """按 id 取人格；不存在**或已删除**返回 None。
+
+        M3-C：删除是软删（status='deleted'），所以读取路径必须过滤状态。
+        返回 None 让调用方（HTTP 层）自然给 404，不必各自再判一次状态。
+        """
 
     @abstractmethod
-    def list_personas(self, limit: int = 50) -> list[PersonaCard]: ...
+    def list_personas(self, limit: int = 50) -> list[PersonaCard]:
+        """列出可用人格（只含 status='active'）。已删除的不出现。"""
 
     @abstractmethod
     def find_persona_by_template(self, template_id: str) -> PersonaCard | None:
-        """按模板来源查找已实例化的人格；没有返回 None。
+        """按模板来源查找**仍然 active** 的已实例化人格；没有返回 None。
 
         **为什么需要它**：模板实例化必须幂等。记忆按 `(persona_id, user_id)` 存，
         每次点模板都新建一个人格 id，会把同一个用户的记忆切碎到多个 id 下——
@@ -45,6 +51,24 @@ class Repository(ABC):
 
         判定依据是 `provenance.template`（`load_template` 本来就写了这个键）。
         用户自建（一句话生成）的人格没有这个键，不会被误撞。
+
+        **为什么必须过滤 status**：删除模板人格 = 重置这段关系。
+        用户删掉林汐再点林汐，应该是一个全新开始（记忆从零），
+        而不是把旧记忆接回来。已删的那份查不到，实例化才会重建。
+        """
+
+    @abstractmethod
+    def delete_persona(self, persona_id: str) -> PersonaCard | None:
+        """软删除人格，返回被删的卡；不存在或已删除返回 None。
+
+        实现约定（M3-C）：
+
+        - 只把 `persona.status` 改成 'deleted'，**不物理删行**，
+          也不动 `memory_node` / `turn` / `session`。
+          删除人格 ≠ 删除历史——用户只是「这个人格不要了」，
+          会话记录与记忆是另一个维度的数据（也便于误删后恢复）。
+        - 已删的人格再删返回 None（HTTP 层映射 404）。
+          不做幂等 200：那样用户看不出自己删了两遍，前端也拿不到真实状态。
         """
 
     # ---- 会话 ---------------------------------------------------------- #

@@ -156,26 +156,61 @@ class SQLiteRepository(Repository):
         self.conn.commit()
 
     def get_persona(self, persona_id: str) -> PersonaCard | None:
-        row = self.conn.execute("SELECT card FROM persona WHERE id=?", (persona_id,)).fetchone()
+        """只认 active。被软删的人格在这里返回 None——
+        于是「用已删人格开会话」自然 404，不需要在 HTTP 层再补一道判断。
+        """
+        row = self.conn.execute(
+            "SELECT card FROM persona WHERE id=? AND status='active'", (persona_id,)
+        ).fetchone()
         return None if row is None else PersonaCard.model_validate(json.loads(row["card"]))
 
     def list_personas(self, limit: int = 50) -> list[PersonaCard]:
-        rows = self.conn.execute("SELECT card FROM persona ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        """只列 active。删除后的人格不该再出现在「我的人格」里。"""
+        rows = self.conn.execute(
+            "SELECT card FROM persona WHERE status='active' ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
         return [PersonaCard.model_validate(json.loads(r["card"])) for r in rows]
 
     def find_persona_by_template(self, template_id: str) -> PersonaCard | None:
-        """按 provenance.template 找已实例化的模板人格。
+        """按 provenance.template 找**仍然 active** 的已实例化模板人格。
 
         扫表而不是加列：人格数量是「人」的量级（几十到几百），
         一次全表解析 JSON 的开销远小于为它做一次 schema 迁移。
         真到需要索引时再补 `template_id` 列与迁移脚本。
+
+        **必须过滤 status，这是刻意设计而非疏漏**：删除模板人格 = 重置这段关系。
+        用户删掉林汐再点林汐，得到的是一个全新人格（新 id、记忆从零），
+        而不是把旧记忆接回来。所以这里查不到已删的那一份，实例化会重新建一个。
         """
-        rows = self.conn.execute("SELECT card FROM persona ORDER BY created_at ASC").fetchall()
+        rows = self.conn.execute(
+            "SELECT card FROM persona WHERE status='active' ORDER BY created_at ASC"
+        ).fetchall()
         for r in rows:
             card = PersonaCard.model_validate(json.loads(r["card"]))
             if (card.provenance or {}).get("template") == template_id:
                 return card
         return None
+
+    def delete_persona(self, persona_id: str) -> PersonaCard | None:
+        """软删除：status='deleted'，返回被删的人格卡；不存在或已删则 None。
+
+        只动 persona.status 一行，**不级联**删 memory_node / turn / session。
+        删除人格 ≠ 删除历史：会话与记忆是另一个维度的数据，
+        用户说的只是「这个人格我不要了」，不是「把那段时间抹掉」。
+        （也留下误删后翻库恢复的余地。）
+
+        已删的再删返回 None 而不是幂等成功：用户看不出自己删了两遍，
+        而前端拿 404 才能把列表刷成真实状态。
+        """
+        row = self.conn.execute(
+            "SELECT card, status FROM persona WHERE id=?", (persona_id,)
+        ).fetchone()
+        if row is None or row["status"] != "active":
+            return None
+        self.conn.execute("UPDATE persona SET status='deleted' WHERE id=?", (persona_id,))
+        self.conn.commit()
+        return PersonaCard.model_validate(json.loads(row["card"]))
 
     # ---- 会话 ---------------------------------------------------------- #
     def save_session(self, s: Session) -> None:

@@ -473,6 +473,27 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"人格模板不存在: {body.template_id}") from exc
         return _persona_brief(card)
 
+    @app.delete("/v1/personas/{persona_id}")
+    def delete_persona(persona_id: str, repo: Repository = Depends(get_repo)) -> dict[str, Any]:
+        """删除自己造的人格（M3-C）。**软删除**。
+
+        三件事说清楚：
+
+        1. 删的是「这个人格」，不是「这段历史」。只把 persona.status 标为 deleted，
+           memory_node / turn / session 一行不动——用户说的只是「她我不要了」，
+           不是「把我们聊过的都抹掉」。误删也还有翻库恢复的余地。
+        2. 已删的再删给 404，不做幂等 200。幂等看起来「更友好」，
+           但它让用户看不出自己删了两遍，前端也无法用状态码判断列表该不该刷新。
+        3. 删掉模板人格后，再点同一个模板会**重新实例化一个新人格**——
+           这是刻意的「重置这段关系」：新 id、记忆从零，不是把旧记忆接回来。
+           保证这一点的是 find_persona_by_template 过滤 status，见 storage 层注释。
+        """
+        card = repo.delete_persona(persona_id)
+        if card is None:
+            # 不存在与「已删除」同码：两种情况对用户都是「没有一个可删的人格」
+            raise HTTPException(status_code=404, detail=f"人格不存在: {persona_id}")
+        return {"deleted": card.id, "name": card.name}
+
     # ------------------------------------------------------------------ #
     # 会话
     # ------------------------------------------------------------------ #
