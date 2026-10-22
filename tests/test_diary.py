@@ -638,7 +638,10 @@ def test_highlight_memories_are_memory_texts(repo, persona):
             f"/v1/personas/{persona.id}/diary/generate", json={"user_id": "u_a"}
         ).json()["entry"]
     assert 1 <= len(entry["highlight_memories"]) <= 3
-    assert all(m.startswith("记忆") for m in entry["highlight_memories"])
+    # 本意是「highlight 里放的是记忆原文」，不是「必须叫『记忆N』」。
+    # 对话本身也会提炼出记忆（如「今天面试砸了」），所以按内容比对更稳。
+    stored = {n.content for n in repo.list_memories(persona.id, "u_a")}
+    assert all(m in stored for m in entry["highlight_memories"])
 
 
 def test_highlight_accepts_plain_strings(persona):
