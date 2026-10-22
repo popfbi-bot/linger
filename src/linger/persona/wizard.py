@@ -72,6 +72,14 @@ def preview_draft(draft: dict[str, Any] | None, llm) -> PreviewResult:
     """
     card, warnings = build_card_from_draft(draft)
     warnings.extend(resolve_conflicts(card))
+
+    # 来源标记：向导是**用户一项项填的**，模型只生成了试听台词，
+    # 所以它是 authored（用户写的），不是 generated（模型生成的）。
+    # 这个区别现在看无所谓，将来有用：合规上「AI 生成内容」与「用户手填内容」
+    # 的标注要求不同；人格市场也要按来源决定能不能上架。
+    # 落库侧（POST /v1/personas）已经会尊重调用方传入的 type。
+    card.provenance = {"type": "authored", "source": "wizard"}
+
     preview = _sample_preview(card, llm)
     return PreviewResult(persona=card, warnings=warnings, preview=preview)
 
