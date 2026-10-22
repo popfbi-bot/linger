@@ -53,10 +53,23 @@ export OPENAI_MODEL=deepseek-chat
 python examples/serve.py
 ```
 
+真模型有超时 / 重试 / 降级 / 熔断，默认值就能用，也可以调：
+
+```bash
+export LINGER_LLM_FALLBACK=mock       # 主模型挂了降级到谁；空 = 不降级
+export LINGER_LLM_TIMEOUT=20          # 首 chunk 超时（秒）
+export LINGER_LLM_TOTAL_TIMEOUT=120   # 整轮回复的总时限（秒）
+export LINGER_LLM_RETRIES=1           # 每个 provider 的重试次数
+export LINGER_LLM_BREAKER_THRESHOLD=5 # 连续失败几次开熔断
+export LINGER_LLM_BREAKER_COOLDOWN=60 # 熔断冷却秒数
+```
+
+`GET /v1/llm/health` 看实时状态：谁在熔断、上一次调用降级了没有、首字用了多久。
+
 ### 跑测试
 
 ```bash
-python -m pytest        # 222 passed
+python -m pytest        # 598 passed
 ```
 
 ### 命令行演示

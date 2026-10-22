@@ -42,7 +42,8 @@ from ..companion import LIFE_STAGES, correct_life_stage, life_stage_valid
 from ..config import settings
 from ..diary import DiaryGenerateError, generate_diary
 from ..distill import PersonaDistillError, TranscriptError, distill_persona, parse_transcript
-from ..llm import get_provider
+from ..llm import ResilientProvider, get_provider
+from ..llm.base import LLMRuntimeError
 from ..memory.embedding import get_embedder
 from ..models import CompanionProfile, DiaryEntry, MemoryEditRecord, PersonaCard, new_id, now_utc
 from ..orchestrator import Orchestrator
@@ -464,6 +465,43 @@ def _event_stream(events: Iterator[Any]) -> Iterator[str]:
         yield _sse_frame(event.type, event.data)
 
 
+def _sse_error_frame(exc: Exception) -> str:
+    """流已经建立之后模型才坏：只能发一个 error 事件再结束。
+
+    状态码改不了了（响应头早就发出去了），所以这里**不能**假装成功，
+    也不能无声地断流——断流会让前端一直转圈。给一个明确的 error 事件，
+    前端才能说人话：「这次没接上，再试一下」。
+    """
+    return _sse_frame(
+        "error",
+        {"stage": "llm", "kind": type(exc).__name__, "message": str(exc) or type(exc).__name__},
+    )
+
+
+def _first_event(events: Iterator[Any]) -> tuple[Any | None, Iterator[Any]]:
+    """从事件流里取第一个**能证明模型活着**的事件，剩下的原样留下。
+
+    为什么要在建立 SSE 之前先取：模型全挂时，我们要能返回 503 而不是
+    「200 + 流里报错」。用户看到 200 更困惑——200 意味着「我等，就会有字」。
+
+    Orchestrator 是生成器，并且在第一次触到 `self.llm.generate(...)` 之前
+    只会产出 `thinking` / `affect` 这类「准备工作完成」的事件（§5.3 的固定序列
+    `thinking → affect → delta*`）。所以在看到第一个 `delta` 之前，
+    模型还没被调用；一旦看到 `delta`，这一轮就已经「开始吐字」，不能再改状态码。
+
+    前半段先崩（如会话状态坏了）就照旧抛——那不是模型的问题。
+    """
+    buffered: list[Any] = []
+    for event in events:
+        buffered.append(event)
+        if getattr(event, "type", None) == "delta":
+            return buffered, events
+    # 流里没有 delta：要么空回复，要么已经失败（异常已在迭代中抛出）
+    if not buffered:
+        return None, iter(())
+    return buffered, events
+
+
 # --------------------------------------------------------------------------- #
 # 应用工厂
 # --------------------------------------------------------------------------- #
@@ -483,13 +521,18 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # provider 在装配时就定下来，并挂在 app.state 上：
+        # `/v1/llm/health` 要读它的熔断状态与最近一次调用的观测数据，
+        # 而 Orchestrator 只认 LLMProvider 协议（韧性与观测都在协议之外）。
+        app.state.llm = llm or get_provider()
+
         # 外部注入的 repo 由调用方负责关闭，这里不接管
         if repo is not None:
             app.state.repo = repo
             app.state.embedder = embedder or get_embedder(
                 settings.embedder, settings.embedding_dim
             )
-            app.state.orch = Orchestrator(repo, llm or get_provider(), app.state.embedder)
+            app.state.orch = Orchestrator(repo, app.state.llm, app.state.embedder)
             yield
             return
 
@@ -500,7 +543,7 @@ def create_app(
         app.state.embedder = embedder or get_embedder(
             settings.embedder, settings.embedding_dim
         )
-        app.state.orch = Orchestrator(own_repo, llm or get_provider(), app.state.embedder)
+        app.state.orch = Orchestrator(own_repo, app.state.llm, app.state.embedder)
         try:
             yield
         finally:
@@ -527,6 +570,10 @@ def create_app(
     def get_orch() -> Orchestrator:
         return app.state.orch
 
+    def get_llm() -> Any:
+        """当前在用的 provider。`/v1/llm/health` 需要看它的内部状态。"""
+        return app.state.llm
+
     def get_embedder_dep() -> Any:
         """编辑记忆要重算向量，所以嵌入器要能被依赖注入拿到。
 
@@ -544,6 +591,47 @@ def create_app(
             "status": "ok",
             "llm": settings.llm_provider,
             "embedder": settings.embedder,
+        }
+
+    # ------------------------------------------------------------------ #
+    # 模型健康（M4-A）
+    # ------------------------------------------------------------------ #
+    @app.get("/v1/llm/health")
+    def llm_health(llm: Any = Depends(get_llm)) -> dict[str, Any]:
+        """模型层的观测端点：谁在用、谁在熔断、上一次调用怎么样。
+
+        刻意不做成 404：`LINGER_LLM=mock` 时也返回 200（`circuits: []`）——
+        前端可以无条件轮询这个端点，不用先判断自己有没有配模型。
+        「没有韧性层」本身就是一种需要被看到的事实。
+
+        这里读的是进程内的即时状态，不查库、不打外部接口：
+        健康检查自己不能成为新的故障点。
+        """
+        if not isinstance(llm, ResilientProvider):
+            return {
+                "provider": getattr(llm, "name", "unknown"),
+                "circuits": [],
+                "last_call": None,
+            }
+
+        providers = llm.providers
+        report = llm.last_report()
+        return {
+            "provider": llm.name,
+            "primary": getattr(providers[0], "name", "unknown"),
+            "fallbacks": [getattr(p, "name", "unknown") for p in providers[1:]],
+            "circuits": llm.circuits(),
+            "last_call": {
+                "ok": report["ok"],
+                "degraded": report["degraded"],
+                "provider": report["provider"],
+                "elapsed_ms": report["elapsed_ms"],
+                "first_chunk_ms": report["first_chunk_ms"],
+            },
+            # 下面几项是给排障用的，前端可以忽略
+            "last_error": report["error"],
+            "attempts": report["attempts"],
+            "skipped": report["skipped"],
         }
 
     # ------------------------------------------------------------------ #
@@ -635,6 +723,9 @@ def create_app(
         except PersonaGenerateError as exc:
             # 模型吐了不可用的东西 → 422（是「这次生成不能要」，不是服务端坏了）
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except LLMRuntimeError as exc:
+            # 模型层挂了（全不可用 / 超时）→ 503：用户改描述也没用，等一会儿再来
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         return result.as_dict()
 
     @app.post("/v1/personas/distill")
@@ -657,6 +748,8 @@ def create_app(
             result = distill_persona(lines, body.target_name, orch.llm)
         except (TranscriptError, PersonaDistillError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except LLMRuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         return result.as_dict()
 
     @app.post("/v1/personas", status_code=201)
@@ -782,11 +875,35 @@ def create_app(
         body: SendMessageRequest,
         repo: Repository = Depends(get_repo),
         orch: Orchestrator = Depends(get_orch),
-    ) -> StreamingResponse:
+    ) -> Any:
+        """一轮对话（SSE 流式）。
+
+        错误码分两种情况，区别只在「流有没有建立」：
+
+          · 首 chunk 前就全挂了 → **503 + detail**。
+            用户还没看到任何字，这时候说「服务暂时不可用」是诚实的；
+            给 200 再在流里报错，用户看到转圈更困惑。
+          · 已经吐过字之后断了 → 只能发一个 `error` 事件再结束。
+            SSE 已经 200，改不了状态码，所以至少要把话说清楚。
+        """
         if repo.get_session(session_id) is None:
             raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
+
+        events = orch.send_message(session_id, body.content)
+        try:
+            buffered, rest = _first_event(events)
+        except LLMRuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        def stream() -> Iterator[str]:
+            try:
+                yield from (_sse_frame(e.type, e.data) for e in buffered)
+                yield from _event_stream(rest)
+            except LLMRuntimeError as exc:
+                yield _sse_error_frame(exc)
+
         return StreamingResponse(
-            _event_stream(orch.send_message(session_id, body.content)),
+            stream(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -990,6 +1107,8 @@ def create_app(
             )
         except DiaryGenerateError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except LLMRuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         # 重写当天那篇时沿用原 id：日期没变，这篇日记还是同一篇。
         # 换 id 会让前端「高亮新日记」的 diff 看起来像换了一个对象。

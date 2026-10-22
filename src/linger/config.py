@@ -15,6 +15,31 @@ def _env(key: str, default: str = "") -> str:
     return os.environ.get(key, default).strip()
 
 
+def _env_float(key: str, default: float) -> float:
+    """数值配置的容错解析。
+
+    写错一个环境变量（`LINGER_LLM_TIMEOUT=20s`）不该让整个服务起不来——
+    回落到默认值，产品照常能用。参考 _env 的「strip 后为空」语义。
+    """
+    raw = _env(key)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(key: str, default: int) -> int:
+    raw = _env(key)
+    if not raw:
+        return default
+    try:
+        return int(float(raw))
+    except ValueError:
+        return default
+
+
 @dataclass
 class Settings:
     # 存储
@@ -34,6 +59,21 @@ class Settings:
     )
     openai_api_key: str = field(default_factory=lambda: _env("OPENAI_API_KEY"))
     openai_model: str = field(default_factory=lambda: _env("OPENAI_MODEL", "gpt-4o-mini"))
+
+    # 模型韧性（M4-A）：超时 / 重试 / 降级 / 熔断。
+    # 全部有默认值——不配也能跑，配了只影响「模型坏掉时」的表现。
+    llm_fallback: str = field(default_factory=lambda: _env("LINGER_LLM_FALLBACK", "mock"))
+    llm_timeout: float = field(default_factory=lambda: _env_float("LINGER_LLM_TIMEOUT", 20.0))
+    llm_total_timeout: float = field(
+        default_factory=lambda: _env_float("LINGER_LLM_TOTAL_TIMEOUT", 120.0)
+    )
+    llm_retries: int = field(default_factory=lambda: _env_int("LINGER_LLM_RETRIES", 1))
+    llm_breaker_threshold: int = field(
+        default_factory=lambda: _env_int("LINGER_LLM_BREAKER_THRESHOLD", 5)
+    )
+    llm_breaker_cooldown: float = field(
+        default_factory=lambda: _env_float("LINGER_LLM_BREAKER_COOLDOWN", 60.0)
+    )
 
     # 上下文预算（§3.6.2）
     context_budget_tokens: int = 8000
