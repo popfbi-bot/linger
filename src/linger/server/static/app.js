@@ -28,6 +28,10 @@
     streamEl: null,     // 当前正在流式写入的气泡
     streamText: "",
     diaryHighlightId: null,   // 刚生成的那篇日记，用高亮标出来（M3-D）
+    // 五步向导的工作区。**唯一真相**：每步输入框的值都先写回这里，
+    // 切步时只换显示可见性，不重建 DOM，所以「上一步 / 下一步」来回走不丢数据。
+    wizardStep: 1,
+    wizardDraft: {},          // 与 POST /v1/personas/draft/preview 的 draft 同构
   };
 
   /** 本机用户标识：localStorage 持久化。
@@ -74,6 +78,37 @@
     btnDistill: $("btn-distill"),
     distillHint: $("distill-hint"),
     distillResult: $("distill-result"),
+    btnShowWizard: $("btn-show-wizard"),
+    wizardPanel: $("wizard-panel"),
+    wizardSteps: $("wizard-steps"),
+    wizardProgress: $("wizard-progress"),
+    wizardStepTitle: $("wizard-step-title"),
+    wizardPrev: $("wizard-prev"),
+    wizardNext: $("wizard-next"),
+    wizardCreate: $("wizard-create"),
+    wizardCancel: $("wizard-cancel"),
+    wizardHint: $("wizard-hint"),
+    wizardPreview: $("wizard-preview"),
+    wizardPreviewLines: $("wizard-preview-lines"),
+    wizardPreviewWarnings: $("wizard-preview-warnings"),
+    wizardFinal: $("wizard-final"),
+    wizName: $("wiz-name"),
+    wizAge: $("wiz-age"),
+    wizIdentity: $("wiz-identity"),
+    wizArchetype: $("wiz-archetype"),
+    wizOpenness: $("wiz-openness"),
+    wizConscientiousness: $("wiz-conscientiousness"),
+    wizExtraversion: $("wiz-extraversion"),
+    wizAgreeableness: $("wiz-agreeableness"),
+    wizNeuroticism: $("wiz-neuroticism"),
+    wizRegister: $("wiz-register"),
+    wizSentLo: $("wiz-sent-lo"),
+    wizSentHi: $("wiz-sent-hi"),
+    wizEmoji: $("wiz-emoji"),
+    wizTics: $("wiz-tics"),
+    wizForbidden: $("wiz-forbidden"),
+    wizKnowsNot: $("wiz-knows-not"),
+    wizLeakPolicy: $("wiz-leak-policy"),
     scenarioList: $("scenario-list"),
     sceneCount: $("scene-count"),
     scenarioCreatePanel: $("scenario-create-panel"),
@@ -1222,6 +1257,333 @@
   el.distillAuthorized.addEventListener("change", syncDistillGate);
   el.btnDistill.addEventListener("click", distillDraft);
   syncDistillGate();
+
+  // ──────────────────── 五步向导（M3-D，入口 D） ────────────────────
+  //
+  // 与入口 B（一句话生成）的分工：B 是「说一句，模型猜」，快但看不见中间产物；
+  // 这里（D）是「一项项填，我看得见每个字段」，慢但精确。所以这一块的重点
+  // 不是生成，而是**每一步都把用户的输入留住，并且每一步都能看效果**。
+  //
+  // 状态怎么保持（判据「上一步/下一步已填内容不能丢」的实现方式）：
+  //   1. 五步全部渲染在 DOM 里（#wizard-steps 的五个 section），切步只切
+  //      `hidden` 与 `.is-current`——**不重建、不清空**，输入框里的字天然留下；
+  //   2. 每次输入/滑动 `collectWizardDraft()` 把当前五个 section 的值读进
+  //      `state.wizardDraft`，所以「切到最后一步再切回来」也一致；
+  //   3. 预览与创建都用 `state.wizardDraft` 那份快照，而不是临时读 DOM，
+  //      因此请求发出去之后用户再改，也不会把两次结果混在一起。
+
+  const WIZARD_TITLES = ["他是谁", "他的性子", "他怎么说", "他的边界", "看一眼"];
+  const WIZARD_LAST = WIZARD_TITLES.length;
+
+  /** 逗号分隔 → 数组。中英文逗号、顿号都当分隔符，去掉空白与空项。 */
+  function splitList(text) {
+    return String(text || "")
+      .split(/[,，、]/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+  }
+
+  /** 把五个 section 的当前值读成 draft。没填的字段直接不出现——
+   *  后端把缺的字段用 PersonaCard 默认值补齐（不落库的预览，缺省即默认）。 */
+  function collectWizardDraft() {
+    const d = {};
+
+    const name = el.wizName.value.trim();
+    const meta = { name };
+    const age = el.wizAge.value.trim();
+    if (age !== "") meta.age = Number(age);
+    const identity = el.wizIdentity.value.trim();
+    if (identity) meta.identity = identity;
+    const archetype = el.wizArchetype.value.trim();
+    if (archetype) meta.archetype = archetype;
+    // 名字为空也照发：草稿允许残缺，后端用「（未命名）」占位。
+    // 拦不拦是「下一步」按钮的事，不是请求体的事。
+    d.meta = meta;
+
+    d.traits = {
+      openness: Number(el.wizOpenness.value),
+      conscientiousness: Number(el.wizConscientiousness.value),
+      extraversion: Number(el.wizExtraversion.value),
+      agreeableness: Number(el.wizAgreeableness.value),
+      neuroticism: Number(el.wizNeuroticism.value),
+    };
+
+    const voice = {};
+    const register = el.wizRegister.value.trim();
+    if (register) voice.register = register;
+    const lo = el.wizSentLo.value.trim();
+    const hi = el.wizSentHi.value.trim();
+    if (lo !== "" && hi !== "") voice.avg_sentence_len = [Number(lo), Number(hi)];
+    else if (lo !== "") voice.avg_sentence_len = [Number(lo), Number(lo)];
+    else if (hi !== "") voice.avg_sentence_len = [Number(hi), Number(hi)];
+    voice.emoji_rate = Number(el.wizEmoji.value);
+    voice.verbal_tics = splitList(el.wizTics.value);
+    voice.forbidden_phrases = splitList(el.wizForbidden.value);
+    d.voice = voice;
+
+    const knowledge = {};
+    knowledge.knows_not = splitList(el.wizKnowsNot.value);
+    const leak = el.wizLeakPolicy.value.trim();
+    if (leak) knowledge.leak_policy = leak;
+    d.knowledge = knowledge;
+
+    state.wizardDraft = d;
+    return d;
+  }
+
+  /** draft → 每个输入框。取消后重开时用，也用于「把默认值填进界面」。 */
+  function applyWizardDraft(draft) {
+    const meta = draft.meta || {};
+    el.wizName.value = meta.name || "";
+    el.wizAge.value = meta.age == null ? "" : String(meta.age);
+    el.wizIdentity.value = meta.identity || "";
+    el.wizArchetype.value = meta.archetype || "";
+
+    const t = draft.traits || {};
+    el.wizOpenness.value = String(t.openness ?? 0.5);
+    el.wizConscientiousness.value = String(t.conscientiousness ?? 0.5);
+    el.wizExtraversion.value = String(t.extraversion ?? 0.5);
+    el.wizAgreeableness.value = String(t.agreeableness ?? 0.5);
+    el.wizNeuroticism.value = String(t.neuroticism ?? 0.5);
+
+    const v = draft.voice || {};
+    el.wizRegister.value = v.register || "";
+    const span = v.avg_sentence_len || [];
+    el.wizSentLo.value = span.length ? String(span[0]) : "";
+    el.wizSentHi.value = span.length ? String(span[1]) : "";
+    el.wizEmoji.value = String(v.emoji_rate ?? 0.2);
+    el.wizTics.value = (v.verbal_tics || []).join(", ");
+    el.wizForbidden.value = (v.forbidden_phrases || []).join(", ");
+
+    const k = draft.knowledge || {};
+    el.wizKnowsNot.value = (k.knows_not || []).join(", ");
+    el.wizLeakPolicy.value = k.leak_policy || "";
+
+    syncWizardValues();
+  }
+
+  /** 滑杆旁边的数字。滑杆不动也要显示当前值——「0~1 的滑杆不显示数值」
+   *  等于让用户猜自己拖到了哪儿。 */
+  function syncWizardValues() {
+    for (const input of el.wizardPanel.querySelectorAll(".wizard-range")) {
+      const out = input.parentElement.querySelector(".wizard-value");
+      if (out) out.textContent = Number(input.value).toFixed(2);
+    }
+  }
+
+  function wizardHasName() {
+    return el.wizName.value.trim().length > 0;
+  }
+
+  /** 按 state.wizardStep 刷新：标题、进度、按钮态、预览区可见性。 */
+  function renderWizardStep() {
+    const step = state.wizardStep;
+    el.wizardProgress.textContent = `第 ${step} / ${WIZARD_LAST} 步`;
+    el.wizardStepTitle.textContent = WIZARD_TITLES[step - 1] || "";
+
+    for (const section of el.wizardSteps.querySelectorAll(".wizard-step")) {
+      const n = Number(section.dataset.step);
+      const current = n === step;
+      section.hidden = !current;
+      section.classList.toggle("is-current", current);
+    }
+
+    el.wizardPrev.disabled = step <= 1;
+    el.wizardNext.hidden = step >= WIZARD_LAST;
+    el.wizardCreate.hidden = step < WIZARD_LAST;
+
+    // 第 1 步的「下一步」：名字为空时禁用，并直说为什么
+    if (step === 1 && !wizardHasName()) {
+      el.wizardNext.disabled = true;
+      el.wizardHint.textContent = "先给他起个名字";
+    } else {
+      el.wizardNext.disabled = false;
+      el.wizardHint.textContent = "";
+    }
+
+    // 预览区：第 2 步之后才有意义（第 1 步还没填名字，也就没语气可听）
+    el.wizardPreview.hidden = step < 2;
+
+    if (step === WIZARD_LAST) renderWizardFinal();
+  }
+
+  async function refreshWizardPreview() {
+    const draft = collectWizardDraft();
+    // 第 1 步还没填名字 → 不请求（没名字的人没有语气可预览）
+    if (!draft.meta.name) {
+      el.wizardPreview.hidden = true;
+      return;
+    }
+    el.wizardPreview.hidden = false;
+    el.wizardPreviewLines.innerHTML = '<div class="draft-line muted">正在想他会怎么说话…</div>';
+    try {
+      const data = await api("/v1/personas/draft/preview", {
+        method: "POST",
+        body: JSON.stringify({ draft }),
+      });
+      renderWizardPreview(data);
+    } catch (err) {
+      el.wizardPreviewLines.innerHTML =
+        `<div class="draft-line">预览失败：${escapeHtml(err.message || String(err))}</div>`;
+      el.wizardPreviewWarnings.hidden = true;
+    }
+  }
+
+  function renderWizardPreview(data) {
+    const lines = data.preview || [];
+    el.wizardPreviewLines.innerHTML = lines.length
+      ? lines.map((l) => `<div class="draft-line">「${escapeHtml(l)}」</div>`).join("")
+      : '<div class="draft-line muted">这一次没写出台词，可以继续填。</div>';
+
+    const warns = data.warnings || [];
+    el.wizardPreviewWarnings.hidden = !warns.length;
+    if (warns.length) {
+      el.wizardPreviewWarnings.innerHTML =
+        `<div class="draft-warn-title">自动修正了 ${warns.length} 处矛盾：</div>` +
+        warns.map((w) => `<div class="draft-warn">· ${escapeHtml(w)}</div>`).join("");
+    }
+
+    // 第 5 步「看一眼」把补全后的卡摊开——这是「表单即 Schema 可视化」的收尾：
+    // 用户填的那些字段，最后长成了一张什么样的人格卡。
+    const p = data.persona || {};
+    const meta = p.meta || {};
+    const traits = p.traits || {};
+    const voice = p.voice || {};
+    const span = voice.avg_sentence_len || [];
+    const rows = [
+      ["名字", meta.name || ""],
+      ["年龄", meta.age == null ? "—" : String(meta.age)],
+      ["身份", meta.identity || "—"],
+      ["原型", meta.archetype || "—"],
+      ["语体", voice.register || "—"],
+      ["句长", span.length ? `${span[0]}~${span[1]} 字` : "—"],
+      ["表情", Number(voice.emoji_rate ?? 0).toFixed(2)],
+      ["口头禅", (voice.verbal_tics || []).join("、") || "—"],
+      ["不懂", ((p.knowledge || {}).knows_not || []).join("、") || "—"],
+      ["外向", Number(traits.extraversion ?? 0).toFixed(2)],
+      ["宜人", Number(traits.agreeableness ?? 0).toFixed(2)],
+    ];
+    el.wizardFinal.innerHTML = rows
+      .map(
+        ([k, v]) =>
+          `<div class="wizard-final-row"><span class="k">${escapeHtml(k)}</span>` +
+          `<span class="v">${escapeHtml(String(v))}</span></div>`
+      )
+      .join("");
+  }
+
+  function renderWizardFinal() {
+    // 第 5 步进入时预览已经请求过（下一步时就请求了），这里只兜一次空态
+    if (!el.wizardFinal.innerHTML.trim()) {
+      el.wizardFinal.innerHTML = '<p class="wizard-hint">还没有预览。点「上一步」再回来一次。</p>';
+    }
+  }
+
+  function toggleWizardPanel() {
+    const opening = el.wizardPanel.hidden;
+    el.wizardPanel.hidden = !opening;
+    // 标题始终是「+ 一步步来」，展开与否靠 .is-open 的强调色表达：
+    // 互换「+ / −」会让三条入口的标题在展开时变形，用户要重新找一次入口在哪
+    el.btnShowWizard.classList.toggle("is-open", opening);
+    if (opening) {
+      resetWizard();
+      el.wizName.focus();
+    }
+  }
+
+  /** 回到初始状态。取消 / 收起面板 / 创建成功之后都走这里。
+   *  刻意不落库：草稿只活在 state 与 DOM 里，关掉就没了。 */
+  function resetWizard() {
+    state.wizardStep = 1;
+    state.wizardDraft = {};
+    applyWizardDraft({});
+    el.wizardPreview.hidden = true;
+    el.wizardPreviewLines.innerHTML = "";
+    el.wizardPreviewWarnings.hidden = true;
+    el.wizardPreviewWarnings.innerHTML = "";
+    el.wizardFinal.innerHTML = "";
+    el.wizardHint.textContent = "";
+    renderWizardStep();
+  }
+
+  async function wizardNext() {
+    // 双保险：按钮 disabled 已挡住，但键盘/脚本能绕过 click 的禁用态
+    if (state.wizardStep === 1 && !wizardHasName()) {
+      el.wizardHint.textContent = "先给他起个名字";
+      return;
+    }
+    if (state.wizardStep >= WIZARD_LAST) return;
+    collectWizardDraft();
+    state.wizardStep += 1;
+    renderWizardStep();
+    // 每进下一步自动请求一次预览（第 1 步之前不请求：那时还没名字）
+    if (state.wizardStep >= 2) await refreshWizardPreview();
+  }
+
+  function wizardPrev() {
+    if (state.wizardStep <= 1) return;
+    collectWizardDraft();
+    state.wizardStep -= 1;
+    renderWizardStep();
+  }
+
+  function wizardCancel() {
+    resetWizard();
+    el.wizardPanel.hidden = true;
+    el.btnShowWizard.classList.remove("is-open");
+  }
+
+  async function wizardCreate() {
+    // 创建用的是**预览补全后**的那张卡吗？不是——刻意用用户填的 draft 再走一次
+    // 后端的补全（POST /v1/personas 接受完整卡）。这样「用户看到的那张卡」
+    // 与「落库的那张卡」是同一条补全路径产出的，不会因为前端抄了一遍而分叉。
+    const draft = collectWizardDraft();
+    if (!draft.meta.name) {
+      el.wizardHint.textContent = "先给他起个名字";
+      state.wizardStep = 1;
+      renderWizardStep();
+      return;
+    }
+    el.wizardCreate.disabled = true;
+    el.wizardCreate.textContent = "创建中…";
+    el.wizardHint.textContent = "";
+    try {
+      // 先用 preview 拿补全后的完整卡（含冲突消解结果），再落库——
+      // 这样落库的就是用户在第 5 步看到的那张卡。
+      const preview = await api("/v1/personas/draft/preview", {
+        method: "POST",
+        body: JSON.stringify({ draft }),
+      });
+      const created = await api("/v1/personas", {
+        method: "POST",
+        body: JSON.stringify({ persona: preview.persona }),
+      });
+      const name = created.name || draft.meta.name;
+      resetWizard();
+      el.wizardPanel.hidden = true;
+      el.btnShowWizard.classList.remove("is-open");
+      await openSession(created.id, name);
+    } catch (err) {
+      el.wizardHint.textContent = "创建失败：" + (err.message || String(err));
+    } finally {
+      el.wizardCreate.disabled = false;
+      el.wizardCreate.textContent = "用这个开始";
+    }
+  }
+
+  // 输入即入草稿：这样「切步不丢」不只靠 DOM 留存，state 里也始终是最新的一份
+  el.wizardPanel.addEventListener("input", () => {
+    collectWizardDraft();
+    syncWizardValues();
+    // 第 1 步名字从空变成非空（或反过来）要立刻影响「下一步」的可点性
+    if (state.wizardStep === 1) renderWizardStep();
+  });
+  el.btnShowWizard.addEventListener("click", toggleWizardPanel);
+  el.wizardNext.addEventListener("click", wizardNext);
+  el.wizardPrev.addEventListener("click", wizardPrev);
+  el.wizardCancel.addEventListener("click", wizardCancel);
+  el.wizardCreate.addEventListener("click", wizardCreate);
+  renderWizardStep();
 
   // ───────────────────────────── 场景选择 ─────────────────────────────
 

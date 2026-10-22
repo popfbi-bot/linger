@@ -44,6 +44,11 @@ _MOCK_PERSONA_JSON = """{
   "initiative": {"max_proactive_per_day": 1, "proactive_topics": ["今天下雨了"]}
 }"""
 
+# 向导预览只要 3 条（M3-D）：向导每进下一步都会请求一次，6 条太慢太贵。
+# 标记复用 M3-A 的 PREVIEW_MARKER——同一件事（「这是样例请求」）不新加标记，
+# 条数差异由 prompt 里的条数说明 + 调用方截断解决。
+_WIZARD_PREVIEW_COUNT = "3"
+
 _MOCK_PREVIEW = "\n".join([
     "坐下。先喝口酒，话慢慢说。",
     "这事我不替你拿主意。你自己心里其实有数。",
@@ -131,7 +136,13 @@ class MockProvider:
             yield from chunks(_MOCK_PERSONA_JSON, size=12)
             return
         if PREVIEW_MARKER in system:
-            yield from chunks(_MOCK_PREVIEW, size=12)
+            # 向导预览（入口 D）在 prompt 里写明要 3 句；M3-A/B/C 要 6 句。
+            # 真实模型会照条数写，mock 这里也得照做——否则「预览恰好 3 条」
+            # 在免密钥环境下会变成「调用方截断的 3 条」，测不出条数契约。
+            text = _MOCK_PREVIEW
+            if f"写 {_WIZARD_PREVIEW_COUNT} 句台词" in system:
+                text = "\n".join(_MOCK_PREVIEW.splitlines()[: int(_WIZARD_PREVIEW_COUNT)])
+            yield from chunks(text, size=12)
             return
 
         ctx = ctx or {}

@@ -48,6 +48,7 @@ from ..memory.embedding import get_embedder
 from ..models import CompanionProfile, DiaryEntry, MemoryEditRecord, PersonaCard, new_id, now_utc
 from ..orchestrator import Orchestrator
 from ..persona.generator import PersonaGenerateError, generate_persona
+from ..persona.wizard import PersonaWizardError, preview_draft
 from ..storage.base import Repository
 from ..storage.sqlite import SQLiteRepository
 
@@ -159,6 +160,22 @@ class DistillPersonaRequest(BaseModel):
         if not v:
             raise ValueError("必须确认拥有这段对话的授权，或已获得对方同意")
         return v
+
+
+class PreviewPersonaDraftRequest(BaseModel):
+    """五步向导的预览请求（入口 D）。**刻意不校验内容**。
+
+    `draft` 收一个任意对象，允许为空（`{}`），也允许只填了几个字段——
+    向导第 1 步之前用户什么都还没填，那时前端送来的就是 `{}`；
+    如果这里要求必填，用户打开面板第一屏就看到 422。
+
+    字段级的正确性（clamp、区间、缺省）在 `persona.wizard` 里做，
+    那里复用了 M3-A 的同一套 Schema 校验——校验只能有一处定义。
+    """
+
+    draft: dict[str, Any] | None = Field(
+        default=None, description="部分填写的人格卡草稿，如 {'meta': {'name': '沈砚'}}"
+    )
 
 
 class CreateSessionRequest(BaseModel):
@@ -750,6 +767,32 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except LLMRuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return result.as_dict()
+
+    @app.post("/v1/personas/draft/preview")
+    def preview_persona_draft_endpoint(
+        body: PreviewPersonaDraftRequest | None = None,
+        orch: Orchestrator = Depends(get_orch),
+    ) -> dict[str, Any]:
+        """向导草稿 → 完整人格卡预览（**不落库**，入口 D）。
+
+        为什么要有这个端点：向导的价值是「我看得见每个字段」，那就必须能
+        「填到一半就看效果」。没有它，用户只能走到第 5 步落库后才知道
+        自己填出来的语气对不对——那已经不是向导，是盲填。
+
+        与 `/v1/personas/generate` 的三处不同：
+          · 输入是**结构化草稿**而不是一句话描述（用户已经选好了每一项）
+          · 预览只有 3 条台词（向导会反复预览，6 条太慢太贵）
+          · 草稿可以残缺，空 `{}` 也返回 200（第 1 步之前就是这个状态）
+
+        相同的是纪律：`resolve_conflicts` 是同一份实现，`draft` 不落库。
+        """
+        draft = (body.draft if body is not None else None) or {}
+        try:
+            result = preview_draft(draft, orch.llm)
+        except PersonaWizardError as exc:
+            # 草稿结构坏到补不出卡（比如 meta 不是对象）→ 422，不是 500
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return result.as_dict()
 
     @app.post("/v1/personas", status_code=201)

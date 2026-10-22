@@ -83,6 +83,140 @@
           <div id="distill-result" class="persona-draft" hidden></div>
         </div>
       </div>
+
+      <!-- M3-D：五步向导（入口 D）。与上面两条入口并列，不复用它们的面板：
+           一个是「模型猜」，一个是「统计数」，这个（D）是「我一格格填」。
+           五步容器（#wizard-steps）里每步一个 section，靠 .is-current 切换可见性；
+           所有已填内容都存在 state.wizard 里，所以上一步/下一步来回走不会丢，
+           切步只是换显示，不重建输入框。 -->
+      <div class="persona-create">
+        <button type="button" id="btn-show-wizard" class="persona-create-toggle">
+          + 一步步来
+        </button>
+        <div id="wizard-panel" class="persona-create-panel wizard-panel" hidden>
+          <div class="wizard-head">
+            <span class="wizard-progress" id="wizard-progress">第 1 / 5 步</span>
+            <span class="wizard-step-title" id="wizard-step-title">他是谁</span>
+          </div>
+
+          <div id="wizard-steps" class="wizard-steps">
+            <!-- 第 1 步：他是谁 -->
+            <section class="wizard-step is-current" data-step="1">
+              <label class="wizard-field">
+                <span class="wizard-label">名字 <em>必填</em></span>
+                <input type="text" id="wiz-name" class="wizard-input" placeholder="沈砚">
+              </label>
+              <label class="wizard-field">
+                <span class="wizard-label">年龄</span>
+                <input type="number" id="wiz-age" class="wizard-input" min="0" max="200" placeholder="41">
+              </label>
+              <label class="wizard-field">
+                <span class="wizard-label">身份</span>
+                <input type="text" id="wiz-identity" class="wizard-input" placeholder="退役剑客，如今在城南修伞">
+              </label>
+              <label class="wizard-field">
+                <span class="wizard-label">原型</span>
+                <input type="text" id="wiz-archetype" class="wizard-input" placeholder="嘴硬心软">
+              </label>
+            </section>
+
+            <!-- 第 2 步：他的性子（BigFive 五个滑杆，0~1，显示当前值） -->
+            <section class="wizard-step" data-step="2" hidden>
+              <p class="wizard-hint">0 是「一点也不」，1 是「非常」。滑杆下面会实时显示数值。</p>
+              <label class="wizard-slider">
+                <span class="wizard-label">开放性</span>
+                <input type="range" id="wiz-openness" class="wizard-range" min="0" max="1" step="0.05" value="0.5">
+                <output class="wizard-value" for="wiz-openness">0.5</output>
+              </label>
+              <label class="wizard-slider">
+                <span class="wizard-label">尽责性</span>
+                <input type="range" id="wiz-conscientiousness" class="wizard-range" min="0" max="1" step="0.05" value="0.5">
+                <output class="wizard-value" for="wiz-conscientiousness">0.5</output>
+              </label>
+              <label class="wizard-slider">
+                <span class="wizard-label">外向性</span>
+                <input type="range" id="wiz-extraversion" class="wizard-range" min="0" max="1" step="0.05" value="0.5">
+                <output class="wizard-value" for="wiz-extraversion">0.5</output>
+              </label>
+              <label class="wizard-slider">
+                <span class="wizard-label">宜人性</span>
+                <input type="range" id="wiz-agreeableness" class="wizard-range" min="0" max="1" step="0.05" value="0.5">
+                <output class="wizard-value" for="wiz-agreeableness">0.5</output>
+              </label>
+              <label class="wizard-slider">
+                <span class="wizard-label">神经质</span>
+                <input type="range" id="wiz-neuroticism" class="wizard-range" min="0" max="1" step="0.05" value="0.5">
+                <output class="wizard-value" for="wiz-neuroticism">0.5</output>
+              </label>
+            </section>
+
+            <!-- 第 3 步：他怎么说 -->
+            <section class="wizard-step" data-step="3" hidden>
+              <label class="wizard-field">
+                <span class="wizard-label">语体</span>
+                <input type="text" id="wiz-register" class="wizard-input" placeholder="口语、短句">
+              </label>
+              <div class="wizard-field">
+                <span class="wizard-label">句子长短（下界 ~ 上界，单位字）</span>
+                <div class="wizard-pair">
+                  <input type="number" id="wiz-sent-lo" class="wizard-input" min="1" max="60" placeholder="8">
+                  <span class="wizard-tilde">~</span>
+                  <input type="number" id="wiz-sent-hi" class="wizard-input" min="1" max="60" placeholder="20">
+                </div>
+              </div>
+              <label class="wizard-slider">
+                <span class="wizard-label">表情密度</span>
+                <input type="range" id="wiz-emoji" class="wizard-range" min="0" max="1" step="0.05" value="0.2">
+                <output class="wizard-value" for="wiz-emoji">0.2</output>
+              </label>
+              <label class="wizard-field">
+                <span class="wizard-label">口头禅（逗号分隔）</span>
+                <input type="text" id="wiz-tics" class="wizard-input" placeholder="坐着吧, 先喝口水">
+              </label>
+              <label class="wizard-field">
+                <span class="wizard-label">禁用说法（逗号分隔）</span>
+                <input type="text" id="wiz-forbidden" class="wizard-input" placeholder="亲爱的, 希望对你有帮助">
+              </label>
+            </section>
+
+            <!-- 第 4 步：他的边界 -->
+            <section class="wizard-step" data-step="4" hidden>
+              <label class="wizard-field">
+                <span class="wizard-label">他不懂的领域（逗号分隔）</span>
+                <input type="text" id="wiz-knows-not" class="wizard-input" placeholder="网络流行语, 编程">
+              </label>
+              <label class="wizard-field">
+                <span class="wizard-label">被追问身份时怎么说</span>
+                <textarea id="wiz-leak-policy" class="wizard-input wizard-textarea" rows="2"
+                  placeholder="被直接追问身份时承认，但不跳出人设情绪"></textarea>
+              </label>
+              <p class="wizard-hint">写清楚「他不懂什么」，他才不会变成一个无所不知的客服。</p>
+            </section>
+
+            <!-- 第 5 步：看一眼（右侧预览区第 2 步之后就出现，这里只放确认） -->
+            <section class="wizard-step" data-step="5" hidden>
+              <p class="wizard-hint">看一眼下面的台词和这张卡。不满意就点「上一步」改，满意就创建。</p>
+              <div id="wizard-final" class="wizard-final"></div>
+            </section>
+          </div>
+
+          <div class="wizard-actions">
+            <button type="button" id="wizard-prev" class="btn-secondary" disabled>上一步</button>
+            <button type="button" id="wizard-next" class="btn-secondary">下一步</button>
+            <button type="button" id="wizard-create" class="btn-primary" hidden>用这个开始</button>
+            <button type="button" id="wizard-cancel" class="wizard-cancel">取消</button>
+          </div>
+          <p class="wizard-hint" id="wizard-hint"></p>
+
+          <!-- 实时预览区：第 2 步之后出现，每次进下一步自动请求一次 preview。
+               故意和「一步」绑在一起：用户看的永远是「我刚填完的那一版」。 -->
+          <div id="wizard-preview" class="wizard-preview" hidden>
+            <div class="wizard-preview-title">她说话大概是这样</div>
+            <div id="wizard-preview-lines" class="draft-lines"></div>
+            <div id="wizard-preview-warnings" class="draft-warnings" hidden></div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- M3-C：我的人格。与上面的模板列表并列成两个区块，不做 tab：

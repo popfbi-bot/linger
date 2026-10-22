@@ -464,6 +464,141 @@ body {
 /* 克隆标注：合规要求的可视化提示，不做得刺眼但要能被看见 */
 .cloned-mark { color: #9a6a1b; }
 
+/* ───────────── 五步向导（M3-D，入口 D） ───────────── */
+
+/* 只用已有变量与圆角：不引入新配色体系（与 M3-A 生成面板同一套） */
+/* 面板本身没有额外装饰：与上面两条入口共用 .persona-create-panel 的内边距。
+   写一条显式规则是为了让「向导面板」这个类名在样式表里有落点，
+   而不是只靠 HTML 里的空类名。 */
+.wizard-panel { margin-top: 8px; }
+
+/* 展开中的入口：与「已选中」同一套强调色，用户一眼知道哪一条在展开 */
+.persona-create-toggle.is-open { color: var(--text); font-weight: 600; }
+
+.wizard-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.wizard-progress {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.wizard-step-title { font-size: 12px; color: var(--text-dim); }
+
+.wizard-steps {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+}
+.wizard-step { display: flex; flex-direction: column; gap: 8px; }
+.wizard-step[hidden] { display: none; }
+
+.wizard-field { display: flex; flex-direction: column; gap: 3px; }
+.wizard-label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.wizard-label em {
+  font-style: normal;
+  font-size: 10px;
+  color: #9a6a1b;
+  margin-left: 4px;
+}
+
+.wizard-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+}
+.wizard-input:focus { outline: none; border-color: var(--accent); }
+.wizard-textarea { resize: vertical; line-height: 1.55; }
+.wizard-input::placeholder { color: var(--muted); }
+
+/* 句长的两个数字输入：中间一个 ~ ，两个框等宽 */
+.wizard-pair { display: flex; align-items: center; gap: 6px; }
+.wizard-tilde { font-size: 11px; color: var(--muted); }
+
+/* 滑杆行：标签 / 滑杆 / 当前值三段。数值必须可见——否则用户不知道自己拖到哪 */
+.wizard-slider {
+  display: grid;
+  grid-template-columns: 52px 1fr 34px;
+  align-items: center;
+  gap: 6px;
+}
+.wizard-range { width: 100%; accent-color: var(--accent); }
+.wizard-value {
+  font-size: 11px;
+  color: var(--text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.wizard-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.wizard-cancel {
+  font: inherit;
+  font-size: 12px;
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 0;
+}
+.wizard-cancel:hover { color: var(--text-dim); text-decoration: underline; }
+
+.wizard-hint {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+  margin: 6px 0 0;
+  min-height: 1em;
+}
+.wizard-hint:empty { display: none; }
+
+/* 预览区：第 2 步之后出现。复用 .draft-lines / .draft-warnings 的视觉，
+   只在外面加一层标题——向导里它是「边填边看」，不是一次性结果。 */
+.wizard-preview {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.wizard-preview-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+/* 第 5 步：把补全后的卡摊开（表单即 Schema 可视化的收尾） */
+.wizard-final { display: flex; flex-direction: column; gap: 3px; }
+.wizard-final-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  padding: 2px 0;
+  border-bottom: 1px dotted var(--border-soft);
+}
+.wizard-final-row .k { color: var(--muted); flex: none; }
+.wizard-final-row .v { color: var(--text); text-align: right; }
+
 /* ───────────── 场景选择 ───────────── */
 
 .scenario-list { display: flex; flex-direction: column; gap: 8px; }
