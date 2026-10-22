@@ -1,0 +1,48 @@
+# 灵犀 Linger —— CI 护栏：push / PR 自动跑全量测试
+#
+# 设计要点：
+# 1. 装依赖（install）与跑测试（test）拆成两个 Stage，红的时候一眼看出是
+#    「装不上」还是「测试不过」。Stage 按序执行，install 失败就不会进 test，
+#    构建记录里哪个 Stage 红的一目了然。
+# 2. 镜像用 Docker Hub 官方 `python:3.11-slim`。CNB 文档没有针对 Python 项目的
+#    专用推荐镜像（构建环境文档给的是 node:22 这类「现成镜像」示例，缺省镜像是
+#    cnbcool/default-build-env）；Python 项目用官方 slim 标签最省事：体积小、
+#    3.11 满足 pyproject 的 requires-python>=3.10、不用自建/推镜像。
+# 3. 测试免密钥免网络：LINGER_LLM 默认即 mock，这里显式写死防串味；
+#    OPENAI_API_KEY 不注入，CI 永不调真实 LLM。
+# 4. `python -m pytest -q -ra`：-ra 让失败时打印 FAILED 用例名摘要，
+#    -q 又不会把 661 条通过用例全刷屏。
+#
+# 本地等价命令：python -m pytest -q
+
+# CI 任务统一模板（YAML 锚点，push / pull_request 各用一次，避免两处漂移）
+.ci-test-pipeline: &ci-test-pipeline
+  docker:
+    image: python:3.11-slim
+  env:
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PIP_NO_CACHE_DIR: "1"
+    # 显式钉住 mock：不依赖外部 LLM，也不会因环境变量误设而联网
+    LINGER_LLM: mock
+  stages:
+    - name: install
+      script:
+        - python -V
+        - python -m pip install --upgrade pip
+        - python -m pip install -e ".[dev]"
+        # 装完立刻验一遍关键依赖能否 import —— 装不上就在这一 Stage 红
+        - python -c "import fastapi, pydantic, httpx, yaml, pytest; print('deps ok')"
+    - name: test
+      script:
+        - python -m pytest -q -ra
+
+main:
+  # main 分支 push：合并后跑一遍全量，兜住「直接推 main」的漏网之鱼
+  push:
+    - name: pytest
+      <<: *ci-test-pipeline
+
+  # PR 目标分支为 main：PR 阶段就红，不必等到合并后
+  pull_request:
+    - name: pytest
+      <<: *ci-test-pipeline
