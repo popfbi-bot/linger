@@ -386,6 +386,12 @@
               `<div class="trace-row"><span class="k">识别到</span><span class="v">${escapeHtml(cats)}</span></div>`
             );
           }
+          if (doneState.roles && doneState.roles.length) {
+            const roleNames = doneState.roles.map((r) => r.name).join("、");
+            parts.push(
+              `<div class="trace-row"><span class="k">角色</span><span class="v">${escapeHtml(roleNames)}</span></div>`
+            );
+          }
           parts.push("</div>");
         }
 

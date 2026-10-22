@@ -1,6 +1,8 @@
 from .knowledge import _DATA_DIR, SocialItem, SocialKnowledge, _strip_bold
+from .roles import RelationRole, RelationRoleKnowledge, detect_relation_roles, get_roles
 
-__all__ = ["SocialItem", "SocialKnowledge", "_DATA_DIR", "ai_boundaries"]
+__all__ = ["SocialItem", "SocialKnowledge", "_DATA_DIR", "ai_boundaries",
+           "RelationRole", "RelationRoleKnowledge", "detect_relation_roles", "get_roles"]
 
 _default_kb: SocialKnowledge | None = None
 

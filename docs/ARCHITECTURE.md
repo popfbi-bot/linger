@@ -666,7 +666,7 @@ def can_level_up(level, intimacy, days_since_first, deep_turns, resonance_events
 
 **方案**：把「人与人如何相处」的行为知识做成认知层的一个独立模块——`src/linger/social/`。它不产生状态，只提供**行为先验**给关系引擎、情绪引擎和生成层。
 
-**语料来源**（六份清单，已入库）：
+**语料来源**（七份清单，已入库）：
 
 | 文件 | 极性 | 条数 | 对应关系阶段 |
 |---|---|---|---|
@@ -676,6 +676,7 @@ def can_level_up(level, intimacy, days_since_first, deep_turns, resonance_events
 | 相处雷区_负面清单 | negative | 215 | 升温 + 相处（level 2~5） |
 | 人生阶段陪伴需求与角色 | companion | 208 | 全阶段 |
 | 陪伴缺失与有毒关系_负面清单 | negative（companion_negative 维度） | 180 | 全阶段（上篇按人生阶段，下篇按有毒关系类型） |
+| 亲密陪伴关系中的人格身份全录 | relation_role（独立维度） | 210 | 全阶段（关系角色图谱） |
 
 **索引结构**：每个条目被解析成 `SocialItem(corpus, stage, polarity, text, section, red_flag, dimension, toxic)`，共 **1293 条**。按 `stage`（初遇/升温/相处/陪伴）与 `polarity`（positive/negative/companion）索引；第六份语料挂在独立的 `dimension="companion_negative"` 维度下，额外按人生阶段（胎儿期~老年期）与有毒关系类型（亲情/友情/职场/亲密/其他）索引。
 
@@ -689,6 +690,33 @@ def can_level_up(level, intimacy, days_since_first, deep_turns, resonance_events
 **为什么放在认知层而不是生成层**：知识库是**可查询的状态无关知识**，不是 prompt 文本。放认知层意味着任何引擎都能消费它（关系引擎查红灯、情绪引擎查触发点、编译器查边界），而不是只有编译器能读。
 
 **优雅降级**：语料缺失或解析异常时，编译器跳过 social 块，不影响主链路（有测试钉住）。
+
+#### 3.4.6 关系角色图谱（Relation Role Graph）`[v0.3 新增]`
+
+**问题**：有毒信号识别知道「用户正在经历伤害」，但不知道「用户在关系里是谁」。同一个用户说「我付出了这么多」，可能是照顾者牺牲者的委屈，也可能是情感勒索者的铺垫——AI 只有知道用户站在哪个位置，才知道自己该补哪个位。
+
+**方案**：第七份语料《亲密陪伴关系中的人格身份全录》提供 **210 个关系身份位**，按 14 个维度组织（依恋类型 / 家庭功能 / 权力与主导 / 情感功能 / 戏剧三角 / 追逃模式 / 浪漫叙事 / 现代标签 / 隐性身份 / 内在子人格 / 冲突模式 / 人生阶段 / 社会社交 / 比喻身份）。`src/linger/social/roles.py` 把它解析成 `RelationRoleKnowledge`：
+
+- **`by_dimension(d)`**：按维度取角色；
+- **`search(keyword)`**：按名称/描述模糊搜索；
+- **`complementary_roles(name)`**：用户在演某角色时，AI 该补的位（如「焦虑型依恋者」→ 安全基地 / 情绪稳定器 / 倾听者；「受害者」→ 倾听者 / 情绪稳定器 / 避风港；「照顾者」→ 被照顾者 / 镜子）；
+- **`dynamics(names)`**：识别关系剧本——卡普曼戏剧三角（拯救-迫害-受害）、追逃锁死、内在小孩触发、照顾者牺牲循环；
+- **`detect(text)`**：从用户倾诉中识别可能在演的角色（关键词匹配）。
+
+**接入点**（已实现）：
+
+1. **Orchestrator**：`_update_state` 里并行跑 `role_knowledge.detect(content)`，结果进入 `done` 事件的 `state.roles` 字段（与 `toxic_signals` 并列）。**只识别，不惩罚**——角色识别绝不进入 `unresolved_conflicts`，不参与关系降级。
+2. **编译器**：识别到角色时，在 `affect` 块之后注入 `roles` 块——告诉 AI「对方此刻像是谁（只用于理解，不要说出口）」+「你此刻可以扮演」（互补角色）+「注意」（关系剧本）。没识别到就不注入，保持前缀缓存稳定。
+
+**与 toxic 信号的边界**：
+
+| 通道 | 回答的问题 | 是否惩罚 |
+|---|---|---|
+| RedFlagDetector | 用户做错了什么 | 是（unresolved_conflicts） |
+| ToxicSignalDetector | 用户正在经历什么伤害 | 否（只提示） |
+| RelationRoleDetector | 用户在关系里是谁 | 否（只提示） |
+
+**为什么这层对陪伴模式关键**：M2 的目标是「识别用户正在经历什么」。角色图谱让 AI 不只是接住情绪，还知道用户缺什么——被照顾者缺被接住，追的人缺被回应，受害者缺不被批判的安全感。AI 的回应从「共情」升级为「补位」。
 
 ---
 

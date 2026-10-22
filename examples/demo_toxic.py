@@ -26,6 +26,7 @@ from linger.memory.embedding import get_embedder  # noqa: E402
 from linger.orchestrator import Orchestrator  # noqa: E402
 from linger.social import get_knowledge  # noqa: E402
 from linger.social.redflag import detect_toxic_signals  # noqa: E402
+from linger.social.roles import detect_relation_roles, get_roles  # noqa: E402
 from linger.storage.sqlite import SQLiteRepository  # noqa: E402
 
 TOXIC_TURNS = [
@@ -66,6 +67,23 @@ def main() -> int:
         for h in hits:
             print(f"  知识：{h.text[:50]}…")
 
+    # ---- 角色识别（纯知识库侧）----
+    print("\n" + "=" * 64)
+    print("RelationRoleKnowledge：用户在关系里是谁（只识别，不惩罚）")
+    print("=" * 64)
+    role_kb = get_roles()
+    print(f"角色位：{role_kb.total} 个，维度：{' / '.join(role_kb.dimensions)}")
+    for text in TOXIC_TURNS:
+        roles = detect_relation_roles(text)
+        if not roles:
+            continue
+        print(f"\n用户：{text}")
+        for r in roles:
+            print(f"  角色：〔{r.dimension}〕{r.name} —— {r.description[:40]}…")
+        comp = role_kb.complementary_roles(roles[0].name)
+        if comp:
+            print(f"  AI 可补位：{'、'.join(c['name'] for c in comp)}")
+
     # ---- orchestrator 集成：toxic_signals 进 done 事件，但关系不惩罚 ----
     print("\n" + "=" * 64)
     print("orchestrator：toxic_signals 进 done 事件，关系不受影响")
@@ -79,6 +97,7 @@ def main() -> int:
         print(f"\n── 第 {i} 轮 ──")
         print(f"用户：{text}")
         toxic_signals = []
+        roles = []
         print("林汐：", end="", flush=True)
         for event in orch.send_message(session.id, text):
             if event.type == "delta":
@@ -86,11 +105,14 @@ def main() -> int:
             elif event.type == "done":
                 st = event.data["state"]
                 toxic_signals = st.get("toxic_signals", [])
+                roles = st.get("roles", [])
                 print()
                 print(f"  关系：level {st['relation']['level']}  "
                       f"unresolved_conflicts {st['relation']['unresolved_conflicts']}")
                 print(f"  toxic_signals：{[s['category'] for s in toxic_signals]}")
-                print(f"  （有毒信号只提示，unresolved_conflicts 保持 {st['relation']['unresolved_conflicts']}）")
+                if roles:
+                    print(f"  roles：{[r['name'] for r in roles]}")
+                print(f"  （有毒信号与角色只提示，unresolved_conflicts 保持 {st['relation']['unresolved_conflicts']}）")
 
     repo.close()
     return 0

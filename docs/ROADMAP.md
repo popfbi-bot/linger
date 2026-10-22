@@ -15,9 +15,15 @@
 - ✅ **M1.5 完成**：前端最小可跑界面（`server/static/` 三文件 + 场景选择 + 节拍进度面板）+
   场景运行时（`src/linger/scenario/`，两个内置剧本、关键词节拍推进、进度持久化）；
   **经独立验收**——不只跑测试，而是自己写脚本逐轮核对「节拍是否真的从 prompt 消失」；
-  全量 **142 passed**，干净克隆同样通过，并经真实 uvicorn + 模拟前端全流程复验
+ 全量 **142 passed**，干净克隆同样通过，并经真实 uvicorn + 模拟前端全流程复验
+- ✅ **关系角色图谱已落地**（第七份语料《亲密陪伴关系中的人格身份全录》）：
+  `src/linger/social/roles.py` 把 **210 个关系身份位** 按 14 个维度索引；
+  `RelationRoleKnowledge` 提供 `by_dimension` / `search` / `complementary_roles`（AI 该补哪个位）/
+  `dynamics`（戏剧三角、追逃锁死、内在小孩等关系剧本）/ `detect`（文本识别）；
+  Orchestrator 把识别结果放进 `done` 事件的 `state.roles`，编译器新增 `roles` 块注入互补角色；
+  **只识别，不惩罚**——绝不进入 `unresolved_conflicts`。全量 **163 passed**（+21）
 - 🚧 **下一步（M2，待定优先级）**：
-  1. **陪伴模式**：用第六份语料的人生阶段索引 + `ToxicSignalDetector`，做「她记得你现在处在什么阶段」
+  1. **陪伴模式**：用人生阶段索引 + `ToxicSignalDetector` + **角色图谱**，做「她记得你现在处在什么阶段、你在关系里是谁」——角色图谱已为它铺好第一层（识别 + 补位）
   2. **记忆管理前端**：现在 memory 只能看不能改，`PATCH /v1/memories/{id}` 还没接界面
   3. **多人格 / 多用户**：目前 `user_id` 在前端写死 `u_web`，需要登录态
   4. **脚本可视化编辑**：场景 YAML 现在只能手写

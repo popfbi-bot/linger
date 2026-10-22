@@ -44,6 +44,7 @@ from .relation.engine import tick
 from .scenario import Scenario, load_scenario
 from .server import ServerEvent
 from .social.redflag import RedFlagDetector, ToxicSignalDetector, get_detector, get_toxic_detector
+from .social.roles import RelationRoleKnowledge, get_roles
 from .storage.base import Repository
 
 ENTITY_PATTERN = re.compile(r"[\u4e00-\u9fff]{0,6}(公司|医院|书店|学校)")
@@ -90,6 +91,7 @@ class Orchestrator:
         budget_tokens: int | None = None,
         redflag_detector: RedFlagDetector | None = None,
         toxic_detector: ToxicSignalDetector | None = None,
+        role_knowledge: RelationRoleKnowledge | None = None,
     ) -> None:
         self.repo = repo
         self.llm = llm
@@ -101,6 +103,7 @@ class Orchestrator:
         self.budget_tokens = settings.context_budget_tokens if budget_tokens is None else budget_tokens
         self.redflag_detector = redflag_detector or get_detector()
         self.toxic_detector = toxic_detector or get_toxic_detector()
+        self.role_knowledge = role_knowledge or get_roles()
 
     # ------------------------------------------------------------------ #
     # 会话
@@ -247,6 +250,7 @@ class Orchestrator:
                 },
                 "red_flags": state.red_flags,
                 "toxic_signals": state.toxic_signals,
+                "roles": state.roles,
                 "scenario": scenario_state,
             },
             usage=usage,
@@ -292,7 +296,7 @@ class Orchestrator:
             recall_future = pool.submit(self._recall, content, query_vec, memories)
             state_future = pool.submit(self._update_state, persona, affect_before, relation_before, content)
             recall = recall_future.result()
-            affect_after, relation_after, impacts, red_flags, toxic_signals = state_future.result()
+            affect_after, relation_after, impacts, red_flags, toxic_signals, roles = state_future.result()
 
         # 开场旁白只在第一轮注入：此后它已经是历史，再讲一遍就是复读。
         # `history` 里已经包含本轮的 user turn，所以「第一轮」= 只有这一条。
@@ -306,6 +310,8 @@ class Orchestrator:
             scenario=scenario,
             budget_tokens=self.budget_tokens,
             opening=opening,
+            roles=roles,
+            role_knowledge=self.role_knowledge,
         )
 
         state = _StateSnapshot(
@@ -316,6 +322,7 @@ class Orchestrator:
             impacts=impacts,
             red_flags=red_flags,
             toxic_signals=toxic_signals,
+            roles=roles,
             prompt=prompt,
             messages=[{"role": "user", "content": content}],
         )
@@ -342,7 +349,7 @@ class Orchestrator:
         affect_before: AffectState,
         relation_before: RelationState,
         content: str,
-    ) -> tuple[AffectState, RelationState, list, list[str], list[dict]]:
+    ) -> tuple[AffectState, RelationState, list, list[str], list[dict], list[dict]]:
         impacts = evaluate(content)
         affect_after = step(
             affect_before,
@@ -359,6 +366,12 @@ class Orchestrator:
             {"category": s.category, "text": s.text, "keyword": s.keyword}
             for s in self.toxic_detector.detect(content)
         ]
+        # 关系角色识别：用户在关系里是谁（照顾者/受害者/追的人/讨好者……）。
+        # 只识别、不惩罚——绝不计入 conflict / unresolved_conflicts。
+        roles = [
+            {"name": r.name, "dimension": r.dimension, "description": r.description}
+            for r in self.role_knowledge.detect(content)
+        ]
         relation_after = tick(
             relation_before.model_copy(deep=True),
             is_deep=is_deep_turn(content),
@@ -366,7 +379,7 @@ class Orchestrator:
             resonated=affect_after.pad.distance(affect_before.pad) >= 0.1,
             conflict=bool(red_flags),
         )
-        return affect_after, relation_after, impacts, [h.brief for h in red_flags], toxic_signals
+        return affect_after, relation_after, impacts, [h.brief for h in red_flags], toxic_signals, roles
 
     def _history_messages(self, turns: list[Turn]) -> list[dict[str, str]]:
         return [{"role": t.role, "content": t.content} for t in turns if t.role in ("user", "assistant")]

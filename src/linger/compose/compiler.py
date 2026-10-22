@@ -220,6 +220,49 @@ def _social_block(rel: RelationState, limit: int = 8) -> str:
         return ""
 
 
+def _roles_block(roles: list[dict], role_knowledge) -> str:
+    """关系角色洞察：对方此刻在关系里是谁，你该补哪个位。
+
+    只识别、不评判：角色是「对方正在经历的关系位置」，不是标签。
+    输出互补角色时用「你此刻可以是」而非「你应该」——避免 AI 变成另一个角色扮演机器。
+    """
+    if not roles:
+        return ""
+    lines = ["## 关系角色洞察（只用于理解对方，不要说出来）"]
+    for r in roles[:2]:
+        lines.append(f"- 对方此刻像是「{r['name']}」（{r['dimension']}）：{r['description']}")
+
+    # 互补角色：AI 该补的位
+    complements: list[dict[str, str]] = []
+    for r in roles:
+        complements.extend(role_knowledge.complementary_roles(r["name"], limit=2))
+    # 去重
+    seen: set[str] = set()
+    unique: list[dict[str, str]] = []
+    for c in complements:
+        if c["name"] in seen:
+            continue
+        seen.add(c["name"])
+        unique.append(c)
+        if len(unique) >= 3:
+            break
+
+    if unique:
+        lines.append("")
+        lines.append("你此刻可以扮演：")
+        for c in unique:
+            lines.append(f"- {c['name']}：{c['description']}")
+
+    # 关系剧本（三角 / 追逃 / 内在小孩…）
+    dynamics = role_knowledge.dynamics([r["name"] for r in roles])
+    if dynamics:
+        lines.append("")
+        lines.append("注意：")
+        lines.extend(f"- {d}" for d in dynamics)
+
+    return "\n".join(lines)
+
+
 def compose(
     card: PersonaCard,
     affect: AffectState,
@@ -230,11 +273,14 @@ def compose(
     budget_tokens: int = 8000,
     now: datetime | None = None,
     opening: bool = False,
+    roles: list[dict] | None = None,
+    role_knowledge=None,
 ) -> ComposedPrompt:
     now = now or datetime.now(timezone.utc)
 
     social_text = _social_block(relation)
     ai_bounds_text = _ai_boundaries_block(relation)
+    roles_text = _roles_block(roles or [], role_knowledge) if roles else ""
     blocks = [
         Block("persona", _persona_block(card), cacheable=True),
         Block("constraints", _constraints_block(card), cacheable=True),
@@ -245,6 +291,7 @@ def compose(
         Block("social", social_text) if social_text else None,
         Block("scenario", _scenario_block(scenario, opening)),
         Block("affect", _affect_block(affect)),
+        Block("roles", roles_text) if roles_text else None,
         Block("memory", _memory_block(memories, relation, now)),
     ]
     blocks = [b for b in blocks if b is not None]
