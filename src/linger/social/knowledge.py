@@ -54,6 +54,15 @@ _LIFE_STAGES = (
     "青年期", "中年期", "老年期",
 )
 
+# 「人生阶段陪伴需求与角色.md」上篇实际存在、但不在 _LIFE_STAGES 里的阶段
+# （语料比引擎的 8 个阶段更细：多出学龄期、更年期/准老年期）
+_EXTRA_PROFILE_STAGES = ("学龄期", "更年期", "准老年期")
+
+# 上篇的人生阶段章节标题形态：「一、胎儿期（出生前）」「八、成年/中年期（30—55岁）」
+# 只认「序号 + 阶段名」开头，用来把上篇和下篇（陪伴角色类型）区分开——
+# 下篇同样是「一、亲情陪伴：…」，序号的写法完全相同，不能靠序号判断。
+_LIFE_STAGE_TITLE_RE = re.compile(r"^[一二三四五六七八九十]+、\s*(.+)$")
+
 
 @dataclass
 class SocialItem:
@@ -64,6 +73,7 @@ class SocialItem:
     polarity: str          # positive / negative / companion
     text: str              # 条目原文（已去掉数字编号）
     section: str = ""      # 原文件的章节标题（如"目光交汇的瞬间"）
+    heading: str = ""      # 原文件的大标题（## 级，如"上篇：按人生阶段梳理陪伴需求"）
     red_flag: bool = False # 是否为关系红灯
     dimension: str = "stage"   # stage=关系阶段边界 / companion_negative=陪伴缺失与有毒关系
     toxic: bool = False    # 是否为「有毒关系」条目（下篇）
@@ -92,18 +102,31 @@ class SocialKnowledge:
             if not path.exists():
                 continue
             section = ""
+            heading = ""
             dimension = "companion_negative" if filename == "陪伴缺失与有毒关系_负面清单.md" else "stage"
             for raw in path.read_text(encoding="utf-8").splitlines():
                 line = raw.strip()
                 if not line:
                     continue
                 # 标题行（## 或 ### 开头）
-                m = re.match(r"^#{2,3}\s+(.*)$", line)
+                m = re.match(r"^(#{2,3})\s+(.*)$", line)
                 if m:
-                    section = _clean_title(m.group(1), filename)
+                    if len(m.group(1)) == 2:
+                        # 分区大标题（「上篇：…」「下篇：…」）不是条目所属章节，
+                        # 记下来供分区判定用；其它 ## 标题仍当作 section（既有语义）。
+                        title = m.group(2).strip()
+                        if title.startswith(("上篇", "下篇")):
+                            heading = title
+                            section = title
+                        else:
+                            section = title
+                    else:
+                        section = _clean_title(m.group(2), filename)
+                        if filename == "人生阶段陪伴需求与角色.md" and not heading:
+                            heading = section
                     # 下篇从「九、」开始（九=9 及以后）
                     toxic = dimension == "companion_negative" and bool(
-                        re.match(r"^[九]|^十", m.group(1))
+                        re.match(r"^[九]|^十", m.group(2))
                     )
                     continue
                 # 数字标号条目：1. **xxx** 或 1. xxx
@@ -117,6 +140,7 @@ class SocialKnowledge:
                             polarity=polarity,
                             text=text,
                             section=section,
+                            heading=heading,
                             red_flag=(polarity == "negative"),
                             dimension=dimension,
                             toxic=toxic,
@@ -189,8 +213,22 @@ class SocialKnowledge:
         return [i.text for i in self.by_stage(stage) if i.red_flag][:limit]
 
     def companion_profiles(self) -> list[str]:
-        """人生阶段陪伴需求摘要（每阶段一条），供场景与编译器使用。"""
-        return [i.text for i in self.by_stage("陪伴") if i.section == "上篇：按人生阶段梳理陪伴需求"]
+        """人生阶段陪伴需求（上篇：按人生阶段梳理的陪伴需求），供场景与编译器使用。
+
+        按语料的真实标题结构取值，不硬编码 section 名：
+        上篇文章用「一、胎儿期（出生前）」「八、成年/中年期（30—55岁）」这类标题，
+        且 `_clean_title()` 对该文件保留原标题，所以这里认的是「序号 + 阶段名」，
+        而不是曾经写死的「上篇：按人生阶段梳理陪伴需求」——那个标题在条目上根本不存在，
+        老实现因此恒返回空列表（issue #13）。
+        """
+        return [
+            i.text for i in self.by_stage("陪伴")
+            # 只取正面语料：负面清单的上篇同样按人生阶段排版（「一、胎儿期…」），
+            # 不排除它就会把「陪伴缺失」当成「陪伴需求」混进来。
+            if i.polarity == "companion"
+            and _is_profiles_heading(i.heading)
+            and is_life_stage_section(i.section)
+        ]
 
     # ------------------------------------------------------------------ #
     # 陪伴缺失与有毒关系（dimension="companion_negative"）
@@ -242,6 +280,39 @@ class SocialKnowledge:
         """「如何走出孤独与有毒关系」的行动建议。"""
         return [i.text for i in self.items
                 if i.dimension == "companion_negative" and i.section == "如何走出孤独与有毒关系"][:limit]
+
+
+def _is_profiles_heading(heading: str) -> bool:
+    """大标题是不是「按人生阶段」那篇（而不是「按陪伴角色类型」那篇）。
+
+    `人生阶段陪伴需求与角色.md` 上篇、下篇的章节都写成「一、xxx」，
+    单看章节名分不开（下篇有「一、亲情陪伴：…」，「陪伴」二字撞车）；
+    所以先认大标题：上篇叫「上篇：按人生阶段…」，下篇叫「下篇：按陪伴角色类型…」。
+    大标题缺失时（语料没有 `##` 分层）才退回只看章节名。
+    """
+    if not heading:
+        return True
+    return "人生阶段" in heading and "角色类型" not in heading
+
+
+def is_life_stage_section(section: str) -> bool:
+    """section 标题是不是上篇的「按人生阶段」章节。
+
+    两种形态都要认：
+    - `一、胎儿期（出生前）`——本文件保留原标题；
+    - `胎儿期`——序号前缀被清掉后的形态（`_clean_title` 的其他分支会产出这种），
+      与 `_LIFE_STAGES` / `_EXTRA_PROFILE_STAGES` 精确比对。
+    """
+    m = _LIFE_STAGE_TITLE_RE.match(section or "")
+    if not m:
+        return False
+    name = m.group(1).strip()
+    # 阶段名要出现在序号的**前面**（「八、成年/中年期（30—55岁）」），
+    # 且标题里不能带「陪伴」——下篇的「一、亲情陪伴：…」含「陪伴」二字，
+    # 若只做 `in` 匹配会被误判成人生阶段章节。
+    if "陪伴" in name:
+        return False
+    return any(stage in name for stage in _LIFE_STAGES + _EXTRA_PROFILE_STAGES)
 
 
 def _clean_title(title: str, filename: str) -> str:
