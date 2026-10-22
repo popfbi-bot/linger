@@ -38,7 +38,7 @@ from .models import (
 from .persona.templates import load_template
 from .relation.engine import tick
 from .server import ServerEvent
-from .social.redflag import RedFlagDetector, get_detector
+from .social.redflag import RedFlagDetector, ToxicSignalDetector, get_detector, get_toxic_detector
 from .storage.base import Repository
 
 ENTITY_PATTERN = re.compile(r"[\u4e00-\u9fff]{0,6}(公司|医院|书店|学校)")
@@ -76,6 +76,7 @@ class Orchestrator:
         recall_gate: float | None = None,
         budget_tokens: int | None = None,
         redflag_detector: RedFlagDetector | None = None,
+        toxic_detector: ToxicSignalDetector | None = None,
     ) -> None:
         self.repo = repo
         self.llm = llm
@@ -86,6 +87,7 @@ class Orchestrator:
         self.recall_gate = settings.recall_gate if recall_gate is None else recall_gate
         self.budget_tokens = settings.context_budget_tokens if budget_tokens is None else budget_tokens
         self.redflag_detector = redflag_detector or get_detector()
+        self.toxic_detector = toxic_detector or get_toxic_detector()
 
     # ------------------------------------------------------------------ #
     # 会话
@@ -172,6 +174,7 @@ class Orchestrator:
                     "unresolved_conflicts": state.relation.unresolved_conflicts,
                 },
                 "red_flags": state.red_flags,
+                "toxic_signals": state.toxic_signals,
             },
             usage=usage,
         )
@@ -202,7 +205,7 @@ class Orchestrator:
             recall_future = pool.submit(self._recall, content, query_vec, memories)
             state_future = pool.submit(self._update_state, persona, affect_before, relation_before, content)
             recall = recall_future.result()
-            affect_after, relation_after, impacts, red_flags = state_future.result()
+            affect_after, relation_after, impacts, red_flags, toxic_signals = state_future.result()
 
         prompt = compose(
             persona,
@@ -221,6 +224,7 @@ class Orchestrator:
             affect_before=affect_before,
             impacts=impacts,
             red_flags=red_flags,
+            toxic_signals=toxic_signals,
             prompt=prompt,
             messages=[{"role": "user", "content": content}],
         )
@@ -247,7 +251,7 @@ class Orchestrator:
         affect_before: AffectState,
         relation_before: RelationState,
         content: str,
-    ) -> tuple[AffectState, RelationState, list, list[str]]:
+    ) -> tuple[AffectState, RelationState, list, list[str], list[dict]]:
         impacts = evaluate(content)
         affect_after = step(
             affect_before,
@@ -258,6 +262,12 @@ class Orchestrator:
         # 红灯在状态更新这一侧检测：它属于「这一轮对方做错了什么」，
         # 和情绪冲击一样是对状态的输入，而不是对回复的修饰。
         red_flags = self.redflag_detector.detect(content, relation_before.level)
+        # 有毒信号识别：用户正在经历什么（被消耗/被贬低/被忽视）。
+        # 只提示，不惩罚——绝不计入 conflict / unresolved_conflicts。
+        toxic_signals = [
+            {"category": s.category, "text": s.text, "keyword": s.keyword}
+            for s in self.toxic_detector.detect(content)
+        ]
         relation_after = tick(
             relation_before.model_copy(deep=True),
             is_deep=is_deep_turn(content),
@@ -265,7 +275,7 @@ class Orchestrator:
             resonated=affect_after.pad.distance(affect_before.pad) >= 0.1,
             conflict=bool(red_flags),
         )
-        return affect_after, relation_after, impacts, [h.brief for h in red_flags]
+        return affect_after, relation_after, impacts, [h.brief for h in red_flags], toxic_signals
 
     def _history_messages(self, turns: list[Turn]) -> list[dict[str, str]]:
         return [{"role": t.role, "content": t.content} for t in turns if t.role in ("user", "assistant")]
@@ -342,6 +352,7 @@ class Orchestrator:
                 "intimacy": state.relation.intimacy,
                 "unresolved_conflicts": state.relation.unresolved_conflicts,
                 "red_flags": state.red_flags,
+                "toxic_signals": state.toxic_signals,
             },
             tokens_by_block=state.prompt.tokens_by_block,
             prompt=state.prompt.system,

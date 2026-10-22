@@ -10,7 +10,9 @@ venv/
 .ruff_cache/
 
 # 运行时数据（本地 dev 库，不进版本控制）
-data/
+# 注意：只忽略仓库根目录的 data/，不能匹配 src/**/data/
+#（src/linger/social/data/ 是知识库语料，必须进版本控制）
+/data/
 *.db
 *.sqlite3
 
