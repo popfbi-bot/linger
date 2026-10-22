@@ -12,7 +12,53 @@
 - ✅ **Issue #3 已交付并由 PR #4 合并（squash sha `9095764`）**：红灯检测接入关系引擎 + AI 行为边界注入；全量 **55 passed**
 - ✅ **第六份语料「陪伴缺失与有毒关系」已接入**（commit `415302b`）：180 条负面信号（上篇按人生阶段 100 条，下篇按有毒关系类型 70 条），独立 `companion_negative` 维度；新增 `ToxicSignalDetector` 识别情感勒索/否定打压/冷暴力/忽视等信号，进 `done` 事件，**只提示不惩罚**；同时修复 `.gitignore` 误伤导致语料未入库的隐患（六份语料现全部进版本控制，干净克隆可跑）；全量 **69 passed**
 - ✅ **M1 HTTP 服务层完成**：新增 `src/linger/server/app.py`（10 个端点 + SSE 流式 + `main()` 入口）与 `tests/test_api.py`（32 个用例）；`storage/base.py` 新增 `get_memory` 抽象方法；架构文档补全 SSE 顺序契约（`thinking` 出现 1~2 次）；**经 NPC 3 个 PR 交叉评审，吸收 1 个端点缺口 + 4 条判据缺口，并修复「纯空白输入写入脏 turn」的真实 bug**；全量 **101 passed**，并经真实 uvicorn + curl 复验
-- 🚧 **下一步（M1.5）**：前端最小可跑界面（头像跟随 affect / 气泡跟随 delta / trace 面板）+ 场景运行时（正面清单做剧本节拍）+ 陪伴模式（人生阶段索引 + 有毒信号识别）
+- 🚧 **下一步（M1.5）**：前端最小可跑界面（A 组，自己做）+ 场景运行时（B 组，派工）；陪伴模式（人生阶段索引）顺延 M2
+
+## M1.5 验收清单（前端 + 场景运行时）
+
+> 两组独立验收：A 组是「人眼可见的陪伴感」，B 组是「角色扮演的第二层」。
+> 判据必须能证明会失败。
+
+### A 组：前端最小可跑界面
+
+- [ ] `GET /` 返回 200，`content-type` 含 `text/html`
+- [ ] 页面**无外部 CDN 依赖**（离线可跑，不引 React/Vue/Tailwind 的 CDN）
+- [ ] 页面含五个可见区块：人格选择 / 对话区 / 情绪指示器 / 记忆面板 / trace 面板
+- [ ] JS 调用的端点与后端一致：`GET /v1/personas/templates`、`POST /v1/sessions`、`POST /v1/sessions/{id}/messages`
+- [ ] SSE 用 `fetch` + `ReadableStream` 或 `EventSource` 消费，且按 `event:` 分流
+- [ ] `affect` 事件到达时，情绪指示器的**文字与颜色都变化**（不是只在 console 打印）
+- [ ] `delta` 事件到达时，文本**逐段追加**到气泡（不是等 done 一次性显示）
+- [ ] `done` 事件到达后，记忆面板与 trace 面板**自动刷新**
+- [ ] 断线/404/422 时页面显示可读错误，不白屏
+- [ ] 静态资源由后端挂载（`/static/*` 可访问），刷新页面不掉状态
+
+### B 组：场景运行时（角色扮演第二层）
+
+- [ ] 新增 `src/linger/scenario/` 模块，含结构化 `Scenario` 模型
+- [ ] `Scenario` 字段齐备：`id`/`title`/`world`/`setting`/`opening_narration`/`user_role`/`beats`/`constraints`/`exit_conditions`
+- [ ] 至少 **2 个内置场景** YAML（`src/linger/templates/scenarios/*.yaml`）
+- [ ] `GET /v1/scenarios` 返回场景列表（含 id/title/setting 摘要）
+- [ ] `POST /v1/sessions` 支持 `scenario_id`；不存在的 id 返回 **404**
+- [ ] 编译器的 `scenario` 块包含三样东西：场景设定 + **未完成节拍** + 约束
+      （不再只是把字符串原样拼进 prompt）
+- [ ] 节拍按**关键词 trigger** 推进（确定性，可复现，不用模型判定）
+- [ ] 已完成的节拍**不再出现在**后续 prompt 里（否则 AI 会反复推进同一节拍）
+- [ ] 场景进度**持久化**：重建 Orchestrator 后节拍进度不丢
+- [ ] 一轮结束后 `done` 事件或 trace 里能看到当前节拍状态
+- [ ] `python -m pytest` 全绿，且测试数 **> 101**
+- [ ] 干净克隆后 pytest 通过
+
+### 范围边界
+
+**允许修改**（场景运行时必须动这些，M1 的「不动契约」约束在本轮放开）：
+
+- `src/linger/orchestrator.py`（`create_session` 接收 scenario_id 并加载场景）
+- `src/linger/compose/compiler.py`（`_scenario_block` 升级为结构化渲染）
+- `src/linger/storage/base.py` / `sqlite.py`（场景进度持久化）
+- `src/linger/server/app.py`（仅新增 `/v1/scenarios` 端点；**不要动静态文件路由**，那部分由 A 组负责）
+- `src/linger/models.py`（仅在确有必要时加字段，加完要说明为什么不能放 scenario 模块里）
+
+**不得修改**：`src/linger/social/` `src/linger/memory/` `src/linger/affect/` `src/linger/relation/` `src/linger/persona/` 的既有语义；**不得引入新第三方依赖**。
 
 ## 验收清单（M0「能跑通一轮」）
 
