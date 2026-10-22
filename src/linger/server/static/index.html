@@ -51,6 +51,38 @@
           <div id="persona-draft" class="persona-draft" hidden></div>
         </div>
       </div>
+
+      <!-- M3-E：聊天记录蒸馏。与上面的入口 B 并列，不复用同一个面板：
+           一个是「凭空描述」，一个是「把真人搬进来」——后者要多一道授权确认，
+           混在一个输入框里会让用户误以为「贴记录」和「写描述」是同一种操作。 -->
+      <div class="persona-create">
+        <button type="button" id="btn-show-distill" class="persona-create-toggle">
+          + 从聊天记录复刻一个人
+        </button>
+        <div id="distill-panel" class="persona-create-panel" hidden>
+          <textarea
+            id="distill-transcript"
+            class="persona-desc distill-transcript"
+            rows="6"
+            placeholder="把聊天记录贴进来，一行一句。支持这些写法：&#10;林汐: 行吧，你先忙&#10;林汐：我没事啊…&#10;[林汐] 真的。&#10;没有角色标记的段落会归给上一位说话的人。"
+          ></textarea>
+          <input
+            id="distill-target"
+            class="distill-target"
+            type="text"
+            placeholder="要复刻谁的名字（可不填，默认取发言最多的一方）"
+          >
+          <label class="distill-consent">
+            <input type="checkbox" id="distill-authorized">
+            <span>我确认拥有这段对话的授权，或已获得对方同意</span>
+          </label>
+          <div class="persona-create-actions">
+            <button type="button" id="btn-distill" class="btn-secondary" disabled>蒸馏</button>
+            <span id="distill-hint" class="muted small">勾选上面的授权声明才能开始。</span>
+          </div>
+          <div id="distill-result" class="persona-draft" hidden></div>
+        </div>
+      </div>
     </section>
 
     <!-- M3-C：我的人格。与上面的模板列表并列成两个区块，不做 tab：

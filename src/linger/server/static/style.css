@@ -359,6 +359,91 @@ body {
 
 .draft-actions { margin-top: 10px; }
 
+/* ───────────── 聊天记录蒸馏（M3-E） ───────────── */
+
+/* 聊天记录比一句话描述长得多，给更高的框；等宽字体让「名字: 内容」更容易对齐 */
+.distill-transcript {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  min-height: 96px;
+}
+
+.distill-target {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* 授权声明：不藏在脚注里。它是这个入口能不能用的前提，必须肉眼可见 */
+.distill-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.distill-consent input { margin-top: 2px; flex: none; }
+/* 没勾选时整行变淡并带一点强调：让人一眼看出「卡在这一步」 */
+.distill-consent.is-blocking { color: #9a6a1b; }
+
+.distill-target::placeholder,
+.distill-transcript::placeholder { color: var(--muted); }
+
+.fp-block {
+  padding: 8px 0;
+  border-top: 1px dashed var(--border);
+}
+.fp-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.fp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.fp-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.fp-chip b { font-weight: 600; margin-right: 5px; color: var(--text-dim); }
+
+.fp-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+.fp-key {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-right: 2px;
+}
+.fp-tag {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* 克隆标注：合规要求的可视化提示，不做得刺眼但要能被看见 */
+.cloned-mark { color: #9a6a1b; }
+
 /* ───────────── 场景选择 ───────────── */
 
 .scenario-list { display: flex; flex-direction: column; gap: 8px; }

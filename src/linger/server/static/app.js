@@ -66,6 +66,14 @@
     btnGenerate: $("btn-generate"),
     personaGenerateHint: $("persona-generate-hint"),
     personaDraft: $("persona-draft"),
+    btnShowDistill: $("btn-show-distill"),
+    distillPanel: $("distill-panel"),
+    distillTranscript: $("distill-transcript"),
+    distillTarget: $("distill-target"),
+    distillAuthorized: $("distill-authorized"),
+    btnDistill: $("btn-distill"),
+    distillHint: $("distill-hint"),
+    distillResult: $("distill-result"),
     scenarioList: $("scenario-list"),
     sceneCount: $("scene-count"),
     sceneProgressCard: $("scene-progress-card"),
@@ -1028,6 +1036,182 @@
       generateDraft();
     }
   });
+
+  // ──────────────────── 聊天记录蒸馏（M3-E，入口 C） ────────────────────
+
+  // 授权是整个入口的闸门，所以「能不能点蒸馏」只由它决定——
+  // 不因为「记录够长了」就放行。合规检查不能靠用户自觉点一下才知道。
+  function syncDistillGate() {
+    const ok = el.distillAuthorized.checked;
+    el.btnDistill.disabled = !ok;
+    // 授权没勾时给整行一个视觉提示（对勾本身也看得见，但小屏容易漏）
+    const row = el.distillAuthorized.closest(".distill-consent");
+    if (row) row.classList.toggle("is-blocking", !ok);
+    el.distillHint.textContent = ok
+      ? "只会读出说话习惯，不会入库；确认后再创建。"
+      : "勾选上面的授权声明才能开始。";
+  }
+
+  function toggleDistillPanel() {
+    const opening = el.distillPanel.hidden;
+    el.distillPanel.hidden = !opening;
+    el.btnShowDistill.textContent = opening ? "− 收起" : "+ 从聊天记录复刻一个人";
+    if (opening) el.distillTranscript.focus();
+  }
+
+  async function distillDraft() {
+    // 双保险：按钮 disabled 已经挡住，但键盘/脚本能绕过 click 的禁用态
+    if (!el.distillAuthorized.checked) {
+      el.distillHint.textContent = "勾选上面的授权声明才能开始。";
+      return;
+    }
+    const transcript = el.distillTranscript.value.trim();
+    if (!transcript) {
+      el.distillHint.textContent = "把聊天记录贴进来。";
+      return;
+    }
+    el.btnDistill.disabled = true;
+    el.distillHint.textContent = "正在数他说话的方式…";
+    el.distillResult.hidden = true;
+    try {
+      const data = await api("/v1/personas/distill", {
+        method: "POST",
+        body: JSON.stringify({
+          transcript,
+          target_name: el.distillTarget.value.trim() || null,
+          authorized: true,
+        }),
+      });
+      renderDistillResult(data);
+      el.distillHint.textContent = "";
+    } catch (err) {
+      el.distillHint.textContent = "蒸馏失败：" + (err.message || err);
+    } finally {
+      syncDistillGate();
+    }
+  }
+
+  // 指纹是这一屏的主角：它回答「我们凭什么这么判断」。
+  // 它比 6 条台词更值得摆在前面——台词是模型的想象，这些数字是原文里的事实。
+  function renderFingerprint(fp) {
+    const chips = [];
+    const span = fp.avg_sentence_len || [0, 0];
+    chips.push(["句长", `${span[0]}~${span[1]} 字`]);
+    chips.push(["emoji 率", `${Math.round((fp.emoji_rate || 0) * 100)}%`]);
+    chips.push(["语体", fp.register || "—"]);
+    if (fp.punctuation_policy) chips.push(["标点", fp.punctuation_policy]);
+    const parts = ['<div class="fp-block">'];
+    parts.push('<div class="fp-title">我们统计出了什么</div>');
+    parts.push('<div class="fp-chips">');
+    for (const [k, v] of chips) {
+      parts.push(
+        `<span class="fp-chip"><b>${escapeHtml(k)}</b>${escapeHtml(String(v))}</span>`
+      );
+    }
+    parts.push("</div>");
+    const tics = fp.verbal_tics || [];
+    if (tics.length) {
+      parts.push('<div class="fp-row"><span class="fp-key">口癖</span>');
+      for (const t of tics) parts.push(`<span class="fp-tag">${escapeHtml(t)}</span>`);
+      parts.push("</div>");
+    }
+    const words = fp.high_freq_words || [];
+    if (words.length) {
+      parts.push('<div class="fp-row"><span class="fp-key">高频词</span>');
+      for (const w of words) parts.push(`<span class="fp-tag">${escapeHtml(w)}</span>`);
+      parts.push("</div>");
+    }
+    const emojis = fp.emoji_set || [];
+    if (emojis.length) {
+      parts.push('<div class="fp-row"><span class="fp-key">常用表情</span>');
+      for (const e of emojis) parts.push(`<span class="fp-tag">${escapeHtml(e)}</span>`);
+      parts.push("</div>");
+    }
+    parts.push("</div>");
+    return parts.join("");
+  }
+
+  function renderDistillResult(data) {
+    const p = data.persona || {};
+    const meta = p.meta || {};
+    const parts = [];
+
+    parts.push('<div class="draft-head">');
+    parts.push(`<div class="draft-name">${escapeHtml(meta.name || "（无名）")}</div>`);
+    const sub = [meta.identity, meta.archetype].filter(Boolean).map(escapeHtml).join(" · ");
+    if (sub) parts.push(`<div class="draft-meta">${sub}</div>`);
+    parts.push('<div class="draft-meta cloned-mark">克隆产物 · 仅供自用，不能上架模板市场</div>');
+    parts.push("</div>");
+
+    parts.push(renderFingerprint(data.fingerprint || {}));
+
+    if ((data.preview || []).length) {
+      parts.push('<div class="draft-lines">');
+      for (const line of data.preview) {
+        parts.push(`<div class="draft-line">「${escapeHtml(line)}」</div>`);
+      }
+      parts.push("</div>");
+    }
+
+    if ((data.warnings || []).length) {
+      parts.push('<div class="draft-warnings">');
+      parts.push(`<div class="draft-warn-title">自动修正了 ${data.warnings.length} 处：</div>`);
+      for (const w of data.warnings) {
+        parts.push(`<div class="draft-warn">· ${escapeHtml(w)}</div>`);
+      }
+      parts.push("</div>");
+    }
+
+    parts.push('<div class="draft-actions">');
+    parts.push('<button type="button" class="btn-primary" id="btn-confirm-distill">用这个开始</button>');
+    parts.push("</div>");
+
+    el.distillResult.innerHTML = parts.join("");
+    el.distillResult.hidden = false;
+
+    const confirmBtn = document.getElementById("btn-confirm-distill");
+    if (confirmBtn) {
+      confirmBtn.addEventListener("click", () =>
+        confirmDistill(p, meta.name || "克隆人格")
+      );
+    }
+  }
+
+  // 落库走同一个 POST /v1/personas：persona 里的 provenance.type 原样带回去，
+  // 服务端尊重它（cloned 不会被改写成 generated）。
+  async function confirmDistill(persona, name) {
+    const btn = document.getElementById("btn-confirm-distill");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "创建中…";
+    }
+    try {
+      const created = await api("/v1/personas", {
+        method: "POST",
+        body: JSON.stringify({ persona }),
+      });
+      el.distillResult.hidden = true;
+      el.distillPanel.hidden = true;
+      el.btnShowDistill.textContent = "+ 从聊天记录复刻一个人";
+      el.distillTranscript.value = "";
+      el.distillTarget.value = "";
+      // 授权是**一次性**的：复刻完就重置，下一次必须重新确认。
+      el.distillAuthorized.checked = false;
+      syncDistillGate();
+      await openSession(created.id, created.name || name);
+    } catch (err) {
+      el.distillHint.textContent = "创建失败：" + (err.message || err);
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "用这个开始";
+      }
+    }
+  }
+
+  el.btnShowDistill.addEventListener("click", toggleDistillPanel);
+  el.distillAuthorized.addEventListener("change", syncDistillGate);
+  el.btnDistill.addEventListener("click", distillDraft);
+  syncDistillGate();
 
   // ───────────────────────────── 场景选择 ─────────────────────────────
 

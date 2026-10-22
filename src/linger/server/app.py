@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from ..companion import LIFE_STAGES, correct_life_stage, life_stage_valid
 from ..config import settings
 from ..diary import DiaryGenerateError, generate_diary
+from ..distill import PersonaDistillError, TranscriptError, distill_persona, parse_transcript
 from ..llm import get_provider
 from ..memory.embedding import get_embedder
 from ..models import CompanionProfile, DiaryEntry, MemoryEditRecord, PersonaCard, new_id, now_utc
@@ -51,6 +52,9 @@ from ..storage.sqlite import SQLiteRepository
 
 # 记忆正文长度上限：提炼后的短句，500 字足够容纳「我妈妈下周要去医院复查」这类口径。
 MEMORY_CONTENT_MAX = 500
+
+# 聊天记录蒸馏的最少行数（判据 4）：两行够不上「一段对话」，也数不出风格。
+MIN_TRANSCRIPT_ROWS = 3
 
 # 前端静态资源目录（index.html / app.js / style.css）
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -114,6 +118,45 @@ class GeneratePersonaRequest(BaseModel):
             raise ValueError("描述至少 2 个字")
         if len(v) > 200:
             raise ValueError("描述不能超过 200 字")
+        return v
+
+
+class DistillPersonaRequest(BaseModel):
+    """聊天记录蒸馏（入口 C）。字段校验是**合规红线**，不是参数洁癖。
+
+    `authorized` 必须是 true：复刻一个真人的说话方式，前提是用户拥有这段对话
+    的授权或已征得对方同意。这一条挡在 Schema 层——任何走到蒸馏逻辑之前的请求
+    都必须先过它，避免以后有人加一个「内部调用」旁路把它绕过去。
+    """
+
+    transcript: str = Field(..., description="纯文本聊天记录，至少 3 行非空")
+    target_name: str | None = Field(default=None, description="要复刻谁；不给则取发言最多的一方")
+    authorized: bool = Field(..., description="必须为 true：拥有对话授权或已获对方同意")
+
+    @field_validator("transcript")
+    @classmethod
+    def _check_transcript(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("聊天记录不能为空")
+        rows = [line for line in v.splitlines() if line.strip()]
+        if len(rows) < MIN_TRANSCRIPT_ROWS:
+            raise ValueError(f"聊天记录至少 {MIN_TRANSCRIPT_ROWS} 行")
+        return v
+
+    @field_validator("target_name")
+    @classmethod
+    def _blank_to_none(cls, v: str | None) -> str | None:
+        """空字符串等价于「不给」。前端输了又删干净时不该当成一个叫 "" 的人。"""
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
+    @field_validator("authorized")
+    @classmethod
+    def _must_authorize(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError("必须确认拥有这段对话的授权，或已获得对方同意")
         return v
 
 
@@ -508,6 +551,28 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return result.as_dict()
 
+    @app.post("/v1/personas/distill")
+    def distill_persona_endpoint(
+        body: DistillPersonaRequest,
+        orch: Orchestrator = Depends(get_orch),
+    ) -> dict[str, Any]:
+        """聊天记录 → 人格卡提案（**不落库**，入口 C）。
+
+        与 `/v1/personas/generate` 同构：先给提案，用户确认后再 POST `/v1/personas`。
+        区别在结果的来源——这里 `voice` 是**从原文数出来的**（确定性指纹），
+        模型只补 `meta` / `traits` / `values`。`fingerprint` 原样返回给前端，
+        让用户能核对「我们到底统计出了什么」，而不是只能相信黑箱。
+
+        合规红线（§3.1.3）：`authorized` 由请求体校验强制为 true；
+        产物 `provenance.type = "cloned"`，不允许上架模板市场。
+        """
+        try:
+            lines = parse_transcript(body.transcript)
+            result = distill_persona(lines, body.target_name, orch.llm)
+        except (TranscriptError, PersonaDistillError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return result.as_dict()
+
     @app.post("/v1/personas", status_code=201)
     def create_persona(
         body: CreatePersonaRequest,
@@ -523,7 +588,15 @@ def create_app(
             # id 必须服务端重发：客户端带回来的 id 不可信（可能撞库或被伪造）
             card.id = new_id("p")
             card.version = 1
-            card.provenance = {**(card.provenance or {}), "type": "generated"}
+            # provenance.type 由**调用方**决定：入口 C（聊天记录蒸馏）传 cloned，
+            # 入口 B（一句话生成）不传则默认 generated。
+            # 服务端只补缺省，不覆盖——「这张卡从哪来」是可审计的事实，
+            # 不能因为落库这一步又把它抹平成 generated。
+            incoming_type = str((card.provenance or {}).get("type") or "").strip()
+            card.provenance = {
+                **(card.provenance or {}),
+                "type": incoming_type or "generated",
+            }
             repo.save_persona(card)
             return _persona_brief(card)
 

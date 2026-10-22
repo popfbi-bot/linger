@@ -55,6 +55,23 @@ _MOCK_PREVIEW = "\n".join([
 
 
 # --------------------------------------------------------------------------- #
+# 聊天记录蒸馏（M3-E）：只补推断性字段，**故意不含 voice**
+# --------------------------------------------------------------------------- #
+# 为什么不含 voice：蒸馏的硬约束是「voice 由确定性指纹算出，模型不许覆盖」。
+# mock 如果在这里吐一个 voice，演示就会变成「模型和统计打架，统计赢了」——
+# 看起来像 bug 而不像设计。所以这份样本干净地只给 meta / traits / values，
+# 「模型想改语体」那条分支由 tests/test_persona_distill.py 注入坏数据验证。
+_MOCK_DISTILL_JSON = """{
+  "meta": {"name": "阿澈", "age": 27, "identity": "夜班便利店店员，白天睡觉",
+           "archetype": "话少但记事的人"},
+  "traits": {"openness": 0.45, "conscientiousness": 0.55, "extraversion": 0.32,
+             "agreeableness": 0.68, "neuroticism": 0.48},
+  "values": {"stance_advice": "不劝人，只把看见的说出来",
+             "about_closeness": "习惯了对方会走，所以不先开口"}
+}"""
+
+
+# --------------------------------------------------------------------------- #
 # 日记（M3-D）：免密钥环境下也要有一篇**合格**的日记
 # --------------------------------------------------------------------------- #
 # 这段文本是照着判据写出来的：
@@ -96,7 +113,13 @@ class MockProvider:
         # 人格生成请求走固定产出（M3-A）。延迟导入：generator 在 persona 包里，
         # 包级导入会形成 llm → persona → ... 的回环。
         from ..diary.flow import DIARY_MARKER
+        from ..distill.compose import DISTILL_MARKER
         from ..persona.generator import GENERATE_MARKER, PREVIEW_MARKER
+
+        # 聊天记录蒸馏（M3-E）：只返回 meta/traits/values，不含 voice
+        if DISTILL_MARKER in system:
+            yield from chunks(_MOCK_DISTILL_JSON, size=12)
+            return
 
         # 日记请求（M3-D）：固定产出，且必须过得了流水账检查——
         # 否则 `python examples/serve.py` 的演示一按「写下今天」就满屏 warning。
