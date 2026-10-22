@@ -22,11 +22,64 @@
   `dynamics`（戏剧三角、追逃锁死、内在小孩等关系剧本）/ `detect`（文本识别）；
   Orchestrator 把识别结果放进 `done` 事件的 `state.roles`，编译器新增 `roles` 块注入互补角色；
   **只识别，不惩罚**——绝不进入 `unresolved_conflicts`。全量 **163 passed**（+21）
-- 🚧 **下一步（M2，待定优先级）**：
-  1. **陪伴模式**：用人生阶段索引 + `ToxicSignalDetector` + **角色图谱**，做「她记得你现在处在什么阶段、你在关系里是谁」——角色图谱已为它铺好第一层（识别 + 补位）
-  2. **记忆管理前端**：现在 memory 只能看不能改，`PATCH /v1/memories/{id}` 还没接界面
-  3. **多人格 / 多用户**：目前 `user_id` 在前端写死 `u_web`，需要登录态
-  4. **脚本可视化编辑**：场景 YAML 现在只能手写
+- 🚧 **M2 已拆解并启动**（见下方「M2 验收清单」）：
+  1. **M2-A 陪伴档案**：人生阶段 + 关系角色 + 陪伴需求 + 有毒风险，持久化并注入 prompt —— **已派工给 NPC**
+  2. **M2-B 前端陪伴档案面板**：让用户看得见「她记得我是谁」，并可手动校正阶段 —— 待 M2-A 交付
+  3. **M2-C 记忆管理前端**：`PATCH /v1/memories/{id}` 还没接界面 —— 后续
+  4. 多人格 / 多用户登录态、场景 YAML 可视化编辑 —— 后续
+
+## M2 验收清单（陪伴档案）
+
+> M2 的主题：**让 AI 记得「你现在处在什么阶段、你在关系里是谁」**。
+> M1.5 解决了「单轮对话不越界」，M2 解决「跨轮对话不健忘」。
+>
+> 判据必须**能证明会失败**。M2-A 已派工给云端 NPC（issue 正文即判据来源）。
+
+### M2-A 陪伴档案（核心：模型 + 存储 + 识别 + 注入 + API）
+
+**为什么需要它**：现在 AI 每轮都能靠 `roles` 块临时推断用户的处境，但这层推断**不持久**——
+换个会话就没了。陪伴档案把「用户是谁」变成可存储、可查看、可由用户校正的状态。
+
+- [ ] 新增 `CompanionProfile` 模型（`src/linger/models.py`）：字段含
+      `persona_id` / `user_id` / `life_stage` / `roles` / `needs` / `risks` / `updated_at`
+- [ ] 新增 `companion_profile` 存储表 + Repository 抽象方法
+      `save_companion_profile` / `get_companion_profile`
+      （**必须同步改 `storage/base.py` 与 `storage/sqlite.py`**，抽象与实现成对）
+- [ ] 人生阶段识别：从用户话语中识别 8 个阶段（胎儿期/婴儿期/幼儿期/童年期/青春期/青年期/中期年/老年期）
+- [ ] 陪伴需求：按 `life_stage` 从 `SocialKnowledge.companion_pitfalls()` 取该阶段的陪伴需求
+- [ ] 有毒风险：按 `SocialKnowledge.toxic_relation_items()` 汇总当前关系中的风险类型
+- [ ] 每轮对话结束后**更新档案**（与写记忆同一时机：回复落库之后）
+- [ ] 编译器新增 `companion` 块，把档案注入 prompt（档案为空时**不注入**，不破坏前缀缓存）
+- [ ] `GET /v1/companion/{persona_id}/{user_id}` 返回档案；不存在返回**空档案**而不是 404
+      （档案是可选状态，不存在是常态）
+- [ ] `PATCH /v1/companion/{persona_id}/{user_id}` 允许**用户手动校正** `life_stage`
+- [ ] 档案内容**绝不进入 `unresolved_conflicts`**（识别不是惩罚）
+- [ ] 新增 `tests/test_companion.py`，测试数 > 163
+- [ ] `python -m pytest` 全绿
+
+### M2-B 前端陪伴档案面板
+
+- [ ] 页面新增可见区块「陪伴档案」，显示阶段 / 角色 / 需求 / 风险
+- [ ] 档案为空时有引导文案（不是空白面板）
+- [ ] 用户可手动修改人生阶段并保存（调 `PATCH`）
+- [ ] 面板在 `done` 事件后自动刷新
+- [ ] 无 CDN 依赖（延续 M1.5 纪律）
+
+### M2-C 记忆管理前端
+
+- [ ] 记忆面板支持**编辑**记忆内容（`PATCH /v1/memories/{id}`）
+- [ ] 编辑后 trace 面板能回溯到修改前后的差异
+
+### 范围边界（M2-A）
+
+**允许修改**：`src/linger/models.py`（仅新增 `CompanionProfile`）、
+`src/linger/storage/base.py` + `sqlite.py`（新增表与方法）、`src/linger/orchestrator.py`、
+`src/linger/compose/compiler.py`、`src/linger/server/app.py`（仅新增 companion 端点）、
+新增 `src/linger/companion/` 模块与 `tests/test_companion.py`。
+
+**不得修改**：`src/linger/social/` 的既有语义（角色图谱与人际知识库是只读消费方）、
+`src/linger/memory/` `src/linger/affect/` `src/linger/relation/` `src/linger/persona/`、
+既有测试文件的断言值、**不得引入新第三方依赖**。
 
 ## M1.5 验收清单（前端 + 场景运行时）
 
