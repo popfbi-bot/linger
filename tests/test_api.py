@@ -308,3 +308,95 @@ def test_d3_main_entrypoint_exists():
     from linger.server import app as app_module
 
     assert callable(app_module.main)
+
+
+# --------------------------------------------------------------------------- #
+# E. NPC 评审补入的判据（PR #6/#7/#8 交叉比对后确认的缺口）
+# --------------------------------------------------------------------------- #
+
+
+def test_e1_persona_templates_listed(client):
+    """E1：可实例化的模板清单可查。
+
+    前端要建人格，得先知道有哪些模板可点——否则只能靠猜 template_id。
+    """
+    resp = client.get("/v1/personas/templates")
+    assert resp.status_code == 200
+    templates = resp.json()
+    assert isinstance(templates, list) and templates
+    ids = {t["id"] for t in templates}
+    assert "linxi" in ids
+    for t in templates:
+        assert "id" in t and "name" in t
+
+
+def test_e2_rejected_message_does_not_write_turn(client, session_id, repo):
+    """E2：被拒的请求不能留下半轮对话。
+
+    否则记忆会长在空输入上——这是静默失败最难查的一种。
+    """
+    before = len(repo.list_turns(session_id))
+    resp = client.post(f"/v1/sessions/{session_id}/messages", json={"content": "   "})
+    assert resp.status_code in (400, 422)
+    assert len(repo.list_turns(session_id)) == before, "被拒的消息不应写入 turn"
+
+
+def test_e3_trace_matches_done_turn_id(client, session_id):
+    """E3：trace 的 turn_id 必须与 done 事件里的一致。
+
+    否则前端拿 done.turn_id 查 trace 会 404，回溯功能直接断掉。
+    """
+    events = _read_sse(client, session_id)
+    done = [p for t, p in events if t == "done"][0]
+    turn_id = done["data"]["turn_id"]
+    trace = client.get(f"/v1/traces/{turn_id}").json()
+    assert trace["turn_id"] == turn_id
+
+
+def test_e4_second_turn_also_traceable(client, session_id):
+    """E4：第二轮也要能查到 trace（turn_id 单调递增，不是只有第一轮有）。"""
+    _read_sse(client, session_id, "第一轮。")
+    events = _read_sse(client, session_id, "第二轮。")
+    done = [p for t, p in events if t == "done"][0]
+    turn_id = done["data"]["turn_id"]
+    assert client.get(f"/v1/traces/{turn_id}").status_code == 200
+
+
+def test_e5_turn_persists_into_session_state(client, session_id):
+    """E5：聊完之后，会话状态里的 affect/relation 要反映这一轮。
+
+    状态没落库 = 情绪白算了。
+    """
+    before = client.get(f"/v1/sessions/{session_id}").json()
+    _read_sse(client, session_id, "今天面试砸了，答得一团糟。")
+    after = client.get(f"/v1/sessions/{session_id}").json()
+    assert after["affect"] is not None
+    assert after["relation"] is not None
+    # 情绪不应与初始值完全相同（这一轮有冲击）
+    assert after["affect"] != before.get("affect") or after["relation"] != before.get("relation")
+
+
+def test_e6_openapi_schema_builds(client):
+    """E6：OpenAPI schema 能生成——路由/响应模型定义无误。"""
+    resp = client.get("/openapi.json")
+    assert resp.status_code == 200
+    paths = resp.json()["paths"]
+    for p in ("/health", "/v1/personas", "/v1/sessions", "/v1/sessions/{session_id}/messages"):
+        assert p in paths, f"OpenAPI 缺 {p}"
+
+
+def test_e7_blank_template_not_500(client):
+    """E7：空白 template_id 返回 4xx，不是 500。"""
+    resp = client.post("/v1/personas", json={"template_id": "   "})
+    assert 400 <= resp.status_code < 500
+
+
+def test_e8_bad_turn_id_not_500(client):
+    """E8：非数字 turn_id 返回 4xx，不是 500。"""
+    resp = client.get("/v1/traces/not-a-number")
+    assert 400 <= resp.status_code < 500
+
+
+def test_e9_memories_unknown_session_404(client):
+    """E9：未知会话的记忆列表返回 404。"""
+    assert client.get("/v1/sessions/s_nope/memories").status_code == 404

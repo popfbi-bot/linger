@@ -33,7 +33,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..config import settings
 from ..llm import get_provider
@@ -50,15 +50,48 @@ from ..storage.sqlite import SQLiteRepository
 class CreatePersonaRequest(BaseModel):
     template_id: str = Field(..., min_length=1, description="人格模板 id，如 linxi / laojiang")
 
+    @field_validator("template_id")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        """拒绝纯空白。
+
+        `min_length=1` 只挡得住空字符串，挡不住 "   "——
+        而空白 template_id 会一路走到存储层才炸，错误码还不受控。
+        """
+        v = v.strip()
+        if not v:
+            raise ValueError("template_id 不能为空白")
+        return v
+
 
 class CreateSessionRequest(BaseModel):
     persona_id: str = Field(..., min_length=1)
     user_id: str = Field(..., min_length=1)
     scenario: str | None = None
 
+    @field_validator("persona_id", "user_id")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("不能为空白")
+        return v.strip()
+
 
 class SendMessageRequest(BaseModel):
     content: str = Field(..., min_length=1, description="用户这一轮说的话")
+
+    @field_validator("content")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        """拒绝纯空白内容。
+
+        这不只是洁癖：空白消息会走进 send_message，写下一条空 turn，
+        并让记忆引擎在空输入上提炼——静默失败，且很难查。
+        """
+        v = v.strip()
+        if not v:
+            raise ValueError("content 不能为空白")
+        return v
 
 
 # --------------------------------------------------------------------------- #
@@ -194,6 +227,17 @@ def create_app(
     @app.get("/v1/personas")
     def list_personas(repo: Repository = Depends(get_repo)) -> dict[str, Any]:
         return {"personas": [_persona_brief(c) for c in repo.list_personas()]}
+
+    @app.get("/v1/personas/templates")
+    def list_persona_templates() -> list[dict[str, Any]]:
+        """可实例化的模板清单。
+
+        前端先看有什么可点，再去 POST /v1/personas——
+        否则用户只能靠猜 template_id。
+        """
+        from ..persona.templates import list_templates
+
+        return list_templates()
 
     @app.post("/v1/personas", status_code=201)
     def create_persona(

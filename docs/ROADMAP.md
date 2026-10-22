@@ -11,7 +11,7 @@
 - ✅ **人际知识库（Social Knowledge Base）已落地**（commit `874ad94`）：五份语料 → 1113 条结构化行为条目，按阶段/极性索引，注入编译器；全量 24 passed
 - ✅ **Issue #3 已交付并由 PR #4 合并（squash sha `9095764`）**：红灯检测接入关系引擎 + AI 行为边界注入；全量 **55 passed**
 - ✅ **第六份语料「陪伴缺失与有毒关系」已接入**（commit `415302b`）：180 条负面信号（上篇按人生阶段 100 条，下篇按有毒关系类型 70 条），独立 `companion_negative` 维度；新增 `ToxicSignalDetector` 识别情感勒索/否定打压/冷暴力/忽视等信号，进 `done` 事件，**只提示不惩罚**；同时修复 `.gitignore` 误伤导致语料未入库的隐患（六份语料现全部进版本控制，干净克隆可跑）；全量 **69 passed**
-- ✅ **M1 HTTP 服务层完成**：新增 `src/linger/server/app.py`（9 个端点 + SSE 流式 + `main()` 入口）与 `tests/test_api.py`（23 个用例）；`storage/base.py` 新增 `get_memory` 抽象方法；架构文档补全 SSE 顺序契约（`thinking` 出现 1~2 次）；全量 **92 passed**，并经真实 uvicorn + curl 复验
+- ✅ **M1 HTTP 服务层完成**：新增 `src/linger/server/app.py`（10 个端点 + SSE 流式 + `main()` 入口）与 `tests/test_api.py`（32 个用例）；`storage/base.py` 新增 `get_memory` 抽象方法；架构文档补全 SSE 顺序契约（`thinking` 出现 1~2 次）；**经 NPC 3 个 PR 交叉评审，吸收 1 个端点缺口 + 4 条判据缺口，并修复「纯空白输入写入脏 turn」的真实 bug**；全量 **101 passed**，并经真实 uvicorn + curl 复验
 - 🚧 **下一步（M1.5）**：前端最小可跑界面（头像跟随 affect / 气泡跟随 delta / trace 面板）+ 场景运行时（正面清单做剧本节拍）+ 陪伴模式（人生阶段索引 + 有毒信号识别）
 
 ## 验收清单（M0「能跑通一轮」）
@@ -62,8 +62,23 @@
 > 判据必须**能证明会失败**：每一条都能用一段代码/命令复现「不满足时红」。
 > 与 M0 一样，验收不靠自述，靠独立跑。
 >
-> **状态（2026-10-22 完成）**：28 条全部通过，全量 **92 passed**，
+> **状态（2026-10-22 完成）**：28 条全部通过，全量 **101 passed**，
 > 并在真实 uvicorn 服务器上用 curl 复验（见下方「真实服务器复验」）。
+>
+> **NPC 交叉评审产出**：NPC 为 issue #5 提交了 3 个 PR（#6/#7/#8），
+> 三选一对比后发现两处本轮遗漏，已吸收：
+> 1. **端点缺口**：缺 `GET /v1/personas/templates`（前端要建人格，
+>    得先知道有哪些模板可点，否则只能靠猜 template_id）→ 已补
+> 2. **判据缺口**：缺 4 条行为判据 →
+>    - 被拒的请求**不能留下半轮 turn**（否则记忆长在空输入上）
+>    - trace 的 turn_id 必须与 done 事件一致（否则回溯功能断掉）
+>    - 第二轮也要能查到 trace（turn_id 单调递增，不是只有第一轮有）
+>    - 聊完之后 affect/relation 必须落库（否则情绪白算了）
+>
+> **评审中发现并修复的真实 bug**：`content="   "`（纯空白）能通过
+> `min_length=1` 校验，被当成有效消息写入 turn 表并在空输入上提炼记忆。
+> 已加 `field_validator` 拒绝纯空白（content / template_id / persona_id / user_id），
+> 复验：空白 content 与空白 template_id 均返回 422，turn 表不再有脏数据。
 
 ### A. 入口与契约（当前必然失败项）
 
@@ -133,3 +148,6 @@
 | 删除记忆 | 200 → 再删 404 → 列表归零 |
 | trace 回溯 | query/candidates/passed_gate/selected/tokens_by_block 齐全，prompt 1588 字符 |
 | 错误码 | 不存在会话 404 / 空 content 422 / 不存在模板 404 / 不存在 trace 404 / 不存在记忆 404（**无一为 500**） |
+| 模板清单（后补） | `GET /v1/personas/templates` → `['laojiang', 'linxi']`，含 name / archetype / sample |
+| 纯空白输入（修复后） | `content="   "` → 422，turn 表不新增记录；`template_id="   "` → 422 |
+| OpenAPI | `/openapi.json` 正常生成，10 个 path |
