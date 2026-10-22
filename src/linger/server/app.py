@@ -40,10 +40,13 @@ from ..companion import LIFE_STAGES, correct_life_stage, life_stage_valid
 from ..config import settings
 from ..llm import get_provider
 from ..memory.embedding import get_embedder
-from ..models import CompanionProfile
+from ..models import CompanionProfile, now_utc
 from ..orchestrator import Orchestrator
 from ..storage.base import Repository
 from ..storage.sqlite import SQLiteRepository
+
+# 记忆正文长度上限：提炼后的短句，500 字足够容纳「我妈妈下周要去医院复查」这类口径。
+MEMORY_CONTENT_MAX = 500
 
 # 前端静态资源目录（index.html / app.js / style.css）
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -123,6 +126,40 @@ class CorrectLifeStageRequest(BaseModel):
         return v
 
 
+class UpdateMemoryRequest(BaseModel):
+    """用户编辑自己的一条记忆（部分更新）。
+
+    只开放 `content`：用户改的是**她记错了什么**，不是她是谁的来源。
+    source_type / layer / created_at 由服务端保留——编辑内容不等于改写历史，
+    ai_inferred 的条目被你纠正后，仍然是「当初她推出来的那一条」。
+    statistics（mention_count / recall_count / strength）同理不动：
+    改口径不该让「被提起过几次」归零。
+    """
+
+    content: str = Field(..., description="记忆正文（提炼后的短句，≤500 字）")
+
+    @field_validator("content")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        """拒绝纯空白。
+
+        空白 content 会落进检索，向量近似为零，之后永远召不回也不需要召不回，
+        而用户以为「我改好了」——静默失败里最难查的一类。
+        """
+        v = v.strip()
+        if not v:
+            raise ValueError("content 不能为空白")
+        return v
+
+    @field_validator("content")
+    @classmethod
+    def _not_too_long(cls, v: str) -> str:
+        """记忆是提炼后的短句，不是长文。超长说明这不是一次「纠正」，是另起一条。"""
+        if len(v) > MEMORY_CONTENT_MAX:
+            raise ValueError(f"content 超过 {MEMORY_CONTENT_MAX} 字上限（实际 {len(v)} 字）")
+        return v
+
+
 # --------------------------------------------------------------------------- #
 # 序列化
 # --------------------------------------------------------------------------- #
@@ -152,6 +189,9 @@ def _memory_brief(node) -> dict[str, Any]:
         "status": node.status,
         "pinned": node.pinned,
         "created_at": node.created_at.isoformat(),
+        # 从未编辑过时回落 created_at：前端只需要一个「这条记忆多新」，
+        # 不必为「改过没有」再多一个分支。
+        "updated_at": (node.updated_at or node.created_at).isoformat(),
     }
 
 
@@ -246,9 +286,10 @@ def create_app(
         # 外部注入的 repo 由调用方负责关闭，这里不接管
         if repo is not None:
             app.state.repo = repo
-            app.state.orch = Orchestrator(repo, llm or get_provider(), embedder or get_embedder(
+            app.state.embedder = embedder or get_embedder(
                 settings.embedder, settings.embedding_dim
-            ))
+            )
+            app.state.orch = Orchestrator(repo, llm or get_provider(), app.state.embedder)
             yield
             return
 
@@ -256,11 +297,10 @@ def create_app(
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         own_repo = SQLiteRepository(path)
         app.state.repo = own_repo
-        app.state.orch = Orchestrator(
-            own_repo,
-            llm or get_provider(),
-            embedder or get_embedder(settings.embedder, settings.embedding_dim),
+        app.state.embedder = embedder or get_embedder(
+            settings.embedder, settings.embedding_dim
         )
+        app.state.orch = Orchestrator(own_repo, llm or get_provider(), app.state.embedder)
         try:
             yield
         finally:
@@ -286,6 +326,14 @@ def create_app(
 
     def get_orch() -> Orchestrator:
         return app.state.orch
+
+    def get_embedder_dep() -> Any:
+        """编辑记忆要重算向量，所以嵌入器要能被依赖注入拿到。
+
+        必须是**应用实际在用的那一个**：测试注入 FakeEmbedder 时，
+        这里也得是它，否则断言「向量等于新文本的向量」就没意义。
+        """
+        return app.state.embedder
 
     # ------------------------------------------------------------------ #
     # 健康检查
@@ -488,6 +536,35 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"记忆不存在: {memory_id}")
         repo.delete_memory(memory_id)
         return {"deleted": memory_id, "content": target.content}
+
+    @app.patch("/v1/memories/{memory_id}")
+    def update_memory(
+        memory_id: str,
+        body: UpdateMemoryRequest,
+        repo: Repository = Depends(get_repo),
+        embedder: Any = Depends(get_embedder_dep),
+    ) -> dict[str, Any]:
+        """编辑一条记忆的正文。
+
+        AI 猜错的时候（`source_type="ai_inferred"`）用户必须能改——
+        否则她记错一件事，就会一直错下去。
+
+        三件事必须同时发生，少一件都会让检索与展示分叉：
+          1. 重算 embedding：改了口径而向量还是旧的，会把这条记忆召回到
+             完全无关的对话里；
+          2. 刷新 updated_at：面板要能显示「你什么时候改的」；
+          3. 保留来源与分层与统计：编辑内容不是改写历史。
+        """
+        target = repo.get_memory(memory_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail=f"记忆不存在: {memory_id}")
+
+        target.content = body.content
+        target.embedding = list(embedder.embed(body.content))
+        target.updated_at = now_utc()
+
+        repo.update_memory(target)
+        return _memory_brief(target)
 
     # ------------------------------------------------------------------ #
     # 陪伴档案（M2-A）

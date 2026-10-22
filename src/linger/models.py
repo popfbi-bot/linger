@@ -206,6 +206,10 @@ class MemoryNode(BaseModel):
     status: str = "active"  # active | superseded | archived
     pinned: bool = False
     created_at: datetime = Field(default_factory=now_utc)
+    # 最近一次「被改写」的时间。只由用户编辑（PATCH /v1/memories/{id}）推进，
+    # 召回回写不动它——召回是「用」，编辑是「改」，两件事不能共用一个时间戳。
+    # None = 从未编辑过（created_at 即真相）。
+    updated_at: datetime | None = None
     last_recalled_at: datetime | None = None
     embedding: list[float] | None = None
 

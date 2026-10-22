@@ -124,7 +124,18 @@ class SQLiteRepository(Repository):
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """给老库补列。
+
+        `CREATE TABLE IF NOT EXISTS` 对已存在的表一个字都不改，
+        所以新增列必须显式 ALTER——否则升级后老库一读就炸。
+        """
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(memory_node)")}
+        if "updated_at" not in cols:
+            self.conn.execute("ALTER TABLE memory_node ADD COLUMN updated_at TEXT")
 
     # ---- 人格 ---------------------------------------------------------- #
     def save_persona(self, card: PersonaCard) -> None:
@@ -261,12 +272,12 @@ class SQLiteRepository(Repository):
             self.conn.execute(
                 "INSERT OR REPLACE INTO memory_node (id,persona_id,user_id,layer,type,content,entities,"
                 "embedding,importance,strength,recall_count,mention_count,emotion,source_type,"
-                "source_turn_ids,confidence,status,pinned,created_at,last_recalled_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "source_turn_ids,confidence,status,pinned,created_at,last_recalled_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (n.id, n.persona_id, n.user_id, n.layer, n.type, n.content, _j(n.entities),
                  _j(n.embedding or []), n.importance, n.strength, n.recall_count, n.mention_count,
                  _j(n.emotion), n.source_type, _j(n.source_turn_ids), n.confidence, n.status,
-                 int(n.pinned), _dt(n.created_at), _dt(n.last_recalled_at)),
+                 int(n.pinned), _dt(n.created_at), _dt(n.last_recalled_at), _dt(n.updated_at)),
             )
         self.conn.commit()
 
@@ -280,6 +291,7 @@ class SQLiteRepository(Repository):
             source_turn_ids=_pj(r["source_turn_ids"], []), confidence=r["confidence"],
             status=r["status"], pinned=bool(r["pinned"]),
             created_at=_pd(r["created_at"]) or datetime.now(timezone.utc),
+            updated_at=_pd(r["updated_at"]),
             last_recalled_at=_pd(r["last_recalled_at"]),
         )
 
