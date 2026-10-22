@@ -1030,12 +1030,21 @@ Accept: text/event-stream
 
 SSE 事件序列：
 
+> **顺序契约**：`thinking → affect → delta* → done`
+> - `thinking` 出现 **1~2 次**：`stage=recall`（记忆召回）与 `stage=compose`（prompt 编译）两个阶段各一次
+> - `affect` 恰好一次，在首个 `delta` 之前——前端据此更新头像表情与气泡颜色
+> - `delta` 0~n 次，是回复正文
+> - `done` 恰好一次，在最后，带可解释性数据
+
 ```
 event: thinking
 data: {"stage":"recall","count":4}
 
 event: affect
 data: {"label":"低落","pleasure":-0.28,"arousal":0.31}
+
+event: thinking
+data: {"stage":"compose","tokens":812}
 
 event: delta
 data: {"text":"……"}

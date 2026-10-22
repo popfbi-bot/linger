@@ -64,6 +64,15 @@ class Repository(ABC):
     ) -> list[MemoryNode]: ...
 
     @abstractmethod
+    def get_memory(self, memory_id: str) -> MemoryNode | None:
+        """按 id 查单条记忆。
+
+        M1 记忆管理 API 需要它：HTTP 层拿到 memory_id 后要能定位到
+        它属于哪个 persona/user，否则既无法判断"不存在"（该 404），
+        也无法在不遍历全部会话的前提下删除。
+        """
+
+    @abstractmethod
     def update_memory(self, node: MemoryNode) -> None: ...
 
     @abstractmethod

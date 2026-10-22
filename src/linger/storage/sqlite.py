@@ -272,6 +272,12 @@ class SQLiteRepository(Repository):
         args.append(limit)
         return [self._row_to_memory(r) for r in self.conn.execute(sql, args).fetchall()]
 
+    def get_memory(self, memory_id: str) -> MemoryNode | None:
+        row = self.conn.execute(
+            "SELECT * FROM memory_node WHERE id=? AND status!='deleted'", (memory_id,)
+        ).fetchone()
+        return None if row is None else self._row_to_memory(row)
+
     def update_memory(self, node: MemoryNode) -> None:
         self.add_memories([node])
 
