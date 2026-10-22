@@ -33,10 +33,14 @@
   角色/需求/风险分色标签、空态引导文案、`done` 后自动刷新；新增 15 个前端测试
 - ✅ **README 补齐**（commit `6b38672`）：修复 `pyproject.toml` 声明 `readme = "README.md"`
   但文件缺失导致 **`pip install .` 失败**的构建缺陷
-- 🚧 **下一步（M2-C 及后续）**：
-  1. **M2-C 记忆管理前端**：`PATCH /v1/memories/{id}` 还没接界面
-  2. ~~**issue #13**：`companion_profiles()` 恒返回空列表~~ → 已修复（PR #14，`1a68312`）
-  3. 多人格 / 多用户登录态、场景 YAML 可视化编辑 —— 后续
+- ✅ **M2-C 记忆管理前端完成**（commit `a3c4f2a` 待填，见 git）：记忆面板支持**编辑**
+  与**编辑历史回溯**——前端每条记忆加「编辑」（行内 textarea + 保存/取消）与「历史」
+  （展开 before/after）；后端新增 `memory_edit_log` 表 + `MemoryEditRecord` 模型 +
+  `GET /v1/memories/{id}/edits` 端点，PATCH 时记录 old/new。
+  **经独立验收**（变异 `add_memory_edit` 为 no-op → 2 红，还原 9 绿）；全量 **285 passed**
+- 🚧 **下一步（后续）**：
+  1. ~~**M2-C 记忆管理前端**~~ → 已完成
+  2. 多人格 / 多用户登录态、场景 YAML 可视化编辑 —— 后续
 
 ## M2 验收清单（陪伴档案）
 
@@ -159,8 +163,16 @@
 
 ### M2-C 记忆管理前端
 
-- [ ] 记忆面板支持**编辑**记忆内容（`PATCH /v1/memories/{id}`）
-- [ ] 编辑后 trace 面板能回溯到修改前后的差异
+- [x] 记忆面板支持**编辑**记忆内容（`PATCH /v1/memories/{id}`）
+- [x] 编辑后能回溯到修改前后的差异（`GET /v1/memories/{id}/edits` 审计日志）
+
+> **M2-C 状态（2026-10-22 完成）**：前端记忆面板每条目加「编辑」按钮
+> （行内 textarea + 保存/取消）与「历史」按钮（展开 before/after）；
+> 后端新增 `memory_edit_log` 表 + `MemoryEditRecord` 模型 +
+> `GET /v1/memories/{id}/edits` 端点；PATCH 时记录 old/new。
+> **经独立验收**——变异 `add_memory_edit` 为 no-op 后
+> `test_patch_writes_edit_log` / `test_second_edit_appends_history` 红，还原后绿。
+> 全量 **285 passed**（276 + 9），端到端复验（造记忆 → PATCH → edits → 列表）。
 
 ### 范围边界（M2-A）
 

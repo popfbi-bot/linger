@@ -13,6 +13,7 @@ from typing import Any
 from ..models import (
     AffectState,
     CompanionProfile,
+    MemoryEditRecord,
     MemoryNode,
     PersonaCard,
     RelationState,
@@ -86,6 +87,19 @@ class Repository(ABC):
 
     @abstractmethod
     def delete_memory(self, memory_id: str) -> None: ...
+
+    # ---- 记忆编辑审计（M2-C） ------------------------------------------ #
+    @abstractmethod
+    def add_memory_edit(self, record: MemoryEditRecord) -> None:
+        """记录一次记忆编辑（before/after）。
+
+        编辑是「纠正口径」，必须留痕——前端 trace 面板据此展示修改前后的差异。
+        写入发生在 PATCH 端点成功更新记忆之后，与记忆落库同一事务。
+        """
+
+    @abstractmethod
+    def list_memory_edits(self, memory_id: str, limit: int = 20) -> list[MemoryEditRecord]:
+        """按记忆返回编辑历史（新的在前）。没有记录返回空列表。"""
 
     # ---- 场景进度（M1.5） ---------------------------------------------- #
     @abstractmethod

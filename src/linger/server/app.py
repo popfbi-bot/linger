@@ -40,7 +40,7 @@ from ..companion import LIFE_STAGES, correct_life_stage, life_stage_valid
 from ..config import settings
 from ..llm import get_provider
 from ..memory.embedding import get_embedder
-from ..models import CompanionProfile, now_utc
+from ..models import CompanionProfile, MemoryEditRecord, now_utc
 from ..orchestrator import Orchestrator
 from ..storage.base import Repository
 from ..storage.sqlite import SQLiteRepository
@@ -192,6 +192,9 @@ def _memory_brief(node) -> dict[str, Any]:
         # 从未编辑过时回落 created_at：前端只需要一个「这条记忆多新」，
         # 不必为「改过没有」再多一个分支。
         "updated_at": (node.updated_at or node.created_at).isoformat(),
+        # 是否被用户编辑过：只有编辑才推进 updated_at，所以这个标记等价于
+        # 「有没有编辑历史」。前端据此显示「编辑/历史」按钮。
+        "edited": node.updated_at is not None,
     }
 
 
@@ -554,17 +557,54 @@ def create_app(
              完全无关的对话里；
           2. 刷新 updated_at：面板要能显示「你什么时候改的」；
           3. 保留来源与分层与统计：编辑内容不是改写历史。
+        第四件事是**审计**：编辑前的内容必须留痕（`memory_edit_log`），
+        让「她之前记的是什么、你改成了什么」永远可回溯（M2-C 判据 2）。
         """
         target = repo.get_memory(memory_id)
         if target is None:
             raise HTTPException(status_code=404, detail=f"记忆不存在: {memory_id}")
 
+        old_content = target.content
         target.content = body.content
         target.embedding = list(embedder.embed(body.content))
         target.updated_at = now_utc()
 
         repo.update_memory(target)
+        repo.add_memory_edit(
+            MemoryEditRecord(
+                memory_id=memory_id,
+                old_content=old_content,
+                new_content=body.content,
+            )
+        )
         return _memory_brief(target)
+
+    @app.get("/v1/memories/{memory_id}/edits")
+    def list_memory_edits(
+        memory_id: str,
+        repo: Repository = Depends(get_repo),
+    ) -> dict[str, Any]:
+        """返回一条记忆的编辑历史（新的在前）。
+
+        用于 trace 面板回溯「修改前后的差异」。记忆不存在返回 404，
+        与 PATCH/DELETE 保持一致；没有编辑历史返回空列表（不是错误）。
+        """
+        target = repo.get_memory(memory_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail=f"记忆不存在: {memory_id}")
+
+        records = repo.list_memory_edits(memory_id)
+        return {
+            "memory_id": memory_id,
+            "edits": [
+                {
+                    "old_content": r.old_content,
+                    "new_content": r.new_content,
+                    "edited_at": r.edited_at.isoformat(),
+                }
+                for r in records
+            ],
+        }
 
     # ------------------------------------------------------------------ #
     # 陪伴档案（M2-A）

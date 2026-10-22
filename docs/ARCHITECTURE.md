@@ -1007,11 +1007,17 @@ CREATE TABLE diary_entry (
 | GET | `/v1/sessions/{id}/state` | 当前四态快照（调试/UI） |
 | GET | `/v1/memories` | 记忆列表（分页、按层/类型筛选） |
 | PATCH | `/v1/memories/{id}` | 用户修正记忆 |
+| GET | `/v1/memories/{id}/edits` | 记忆编辑历史（before/after 审计） |
 | DELETE | `/v1/memories/{id}` | 删除记忆 |
 | GET | `/v1/personas/{id}/diary` | 日记列表 |
 | GET | `/v1/relations/{user_id}` | 关系状态 + 事件流 |
 | POST | `/v1/jobs/consolidate` | 手动触发巩固（调试） |
 | GET | `/v1/traces/{turn_id}` | 单轮回溯（用了哪些记忆、什么状态） |
+
+**记忆编辑审计（M2-C）**：`PATCH /v1/memories/{id}` 在更新正文的同时，
+把修改前后的内容写入 `memory_edit_log` 表（`MemoryEditRecord`）。
+编辑是「纠正口径」不是「覆盖历史」——`GET /v1/memories/{id}/edits`
+返回 before/after，前端「历史」按钮据此展开差异。
 
 ### 5.2 创建人格（一键赋能）
 

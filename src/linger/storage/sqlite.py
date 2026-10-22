@@ -17,6 +17,7 @@ from ..models import (
     PAD,
     AffectState,
     CompanionProfile,
+    MemoryEditRecord,
     MemoryNode,
     PersonaCard,
     RelationState,
@@ -98,6 +99,14 @@ CREATE TABLE IF NOT EXISTS trace (
   payload TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS memory_edit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  memory_id TEXT NOT NULL,
+  old_content TEXT NOT NULL,
+  new_content TEXT NOT NULL,
+  edited_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mem_edit_memory ON memory_edit_log (memory_id, id);
 """
 
 
@@ -320,6 +329,31 @@ class SQLiteRepository(Repository):
         # 软删除：status='deleted'。硬删除走单独的管理接口（48h 内物理清理）。
         self.conn.execute("UPDATE memory_node SET status='deleted' WHERE id=?", (memory_id,))
         self.conn.commit()
+
+    # ---- 记忆编辑审计（M2-C） ------------------------------------------ #
+    def add_memory_edit(self, record: MemoryEditRecord) -> None:
+        self.conn.execute(
+            "INSERT INTO memory_edit_log (memory_id, old_content, new_content, edited_at) "
+            "VALUES (?,?,?,?)",
+            (record.memory_id, record.old_content, record.new_content, _dt(record.edited_at)),
+        )
+        self.conn.commit()
+
+    def list_memory_edits(self, memory_id: str, limit: int = 20) -> list[MemoryEditRecord]:
+        rows = self.conn.execute(
+            "SELECT memory_id, old_content, new_content, edited_at FROM memory_edit_log "
+            "WHERE memory_id=? ORDER BY id DESC LIMIT ?",
+            (memory_id, limit),
+        ).fetchall()
+        return [
+            MemoryEditRecord(
+                memory_id=r["memory_id"],
+                old_content=r["old_content"],
+                new_content=r["new_content"],
+                edited_at=_pd(r["edited_at"]) or datetime.now(timezone.utc),
+            )
+            for r in rows
+        ]
 
     # ---- 场景进度 ------------------------------------------------------ #
     def save_scenario_progress(self, session_id: str, data: dict) -> None:

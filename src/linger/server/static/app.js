@@ -287,13 +287,123 @@
       tag.textContent =
         `${LAYER_NAME[m.layer] || "L" + m.layer} · ${SOURCE_NAME[m.source_type] || m.source_type}`;
 
+      // 正文区：行内编辑时会临时替换成 textarea
       const body = document.createElement("div");
+      body.className = "memory-body";
       body.textContent = m.content;
+
+      // 操作栏：编辑 / 历史（M2-C）
+      const actions = document.createElement("div");
+      actions.className = "memory-actions";
+      const btnEdit = document.createElement("button");
+      btnEdit.type = "button";
+      btnEdit.className = "memory-btn";
+      btnEdit.textContent = "编辑";
+      const btnHist = document.createElement("button");
+      btnHist.type = "button";
+      btnHist.className = "memory-btn";
+      btnHist.textContent = "历史";
+      actions.appendChild(btnEdit);
+      actions.appendChild(btnHist);
 
       item.appendChild(tag);
       item.appendChild(body);
+      item.appendChild(actions);
       el.memoryList.appendChild(item);
+
+      // 行内编辑：点「编辑」→ 正文区变 textarea + 保存/取消
+      btnEdit.addEventListener("click", () => startEditMemory(item, body, m));
+      // 历史：展开 before/after 差异
+      btnHist.addEventListener("click", async () => {
+        const existing = item.querySelector(".memory-edits");
+        if (existing) {
+          existing.remove();
+          return;
+        }
+        const histBox = document.createElement("div");
+        histBox.className = "memory-edits";
+        histBox.textContent = "加载中…";
+        item.appendChild(histBox);
+        try {
+          const data = await api(`/v1/memories/${m.id}/edits`);
+          if (!data.edits || !data.edits.length) {
+            histBox.textContent = "没有编辑记录。";
+            return;
+          }
+          histBox.innerHTML = "";
+          for (const e of data.edits) {
+            const row = document.createElement("div");
+            row.className = "memory-edit-row";
+            row.innerHTML =
+              `<span class="memory-edit-old">${escapeHtml(e.old_content)}</span>` +
+              `<span class="memory-edit-arrow">→</span>` +
+              `<span class="memory-edit-new">${escapeHtml(e.new_content)}</span>` +
+              `<span class="memory-edit-time">${escapeHtml((e.edited_at || "").slice(0, 16).replace("T", " "))}</span>`;
+            histBox.appendChild(row);
+          }
+        } catch (err) {
+          histBox.textContent = "读取编辑历史失败：" + (err.message || err);
+        }
+      });
     }
+  }
+
+  async function startEditMemory(item, body, m) {
+    // 把正文区替换成 textarea + 保存/取消
+    const textarea = document.createElement("textarea");
+    textarea.className = "memory-edit-input";
+    textarea.value = m.content;
+    textarea.rows = 3;
+
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "memory-btn is-primary";
+    save.textContent = "保存";
+
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "memory-btn";
+    cancel.textContent = "取消";
+
+    const editor = document.createElement("div");
+    editor.className = "memory-edit-editor";
+    editor.appendChild(textarea);
+    const btns = document.createElement("div");
+    btns.className = "memory-edit-btns";
+    btns.appendChild(save);
+    btns.appendChild(cancel);
+    editor.appendChild(btns);
+
+    body.replaceWith(editor);
+
+    const cleanup = () => {
+      body.textContent = m.content;
+      editor.replaceWith(body);
+    };
+
+    cancel.addEventListener("click", cleanup);
+
+    save.addEventListener("click", async () => {
+      const content = textarea.value;
+      if (!content.trim()) {
+        textarea.classList.add("is-error");
+        return;
+      }
+      save.disabled = true;
+      save.textContent = "保存中…";
+      try {
+        await api(`/v1/memories/${m.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ content: content.trim() }),
+        });
+        await refreshMemories();
+      } catch (err) {
+        save.disabled = false;
+        save.textContent = "保存";
+        textarea.classList.add("is-error");
+        textarea.title = err.message || String(err);
+      }
+    });
   }
 
   async function refreshMemories() {

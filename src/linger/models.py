@@ -311,3 +311,22 @@ class CompanionProfile(BaseModel):
         编译器据此跳过 `companion` 块，保持 prompt 前缀稳定（§3.6 缓存纪律）。
         """
         return not (self.life_stage or self.roles or self.needs or self.risks)
+
+
+# --------------------------------------------------------------------------- #
+# 记忆编辑审计（M2-C）
+# --------------------------------------------------------------------------- #
+
+
+class MemoryEditRecord(BaseModel):
+    """一次记忆编辑的审计留痕。
+
+    用户改记忆是**纠正口径**，不是覆盖历史。这条记录保存修改前后的内容，
+    让「她之前记的是什么、你改成了什么」永远可回溯——这是陪伴信任的底线：
+    AI 猜错可以，猜错后偷偷改掉当没发生，不行。
+    """
+
+    memory_id: str
+    old_content: str
+    new_content: str
+    edited_at: datetime = Field(default_factory=now_utc)

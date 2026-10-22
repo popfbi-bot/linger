@@ -547,6 +547,53 @@ body {
 
 .memory-empty { font-size: 12px; color: var(--muted); line-height: 1.6; }
 
+/* M2-C：记忆编辑与历史 */
+.memory-body { white-space: pre-wrap; word-break: break-word; }
+.memory-actions { display: flex; gap: 6px; margin-top: 6px; }
+.memory-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.memory-btn:hover { background: var(--surface-soft); color: var(--text); }
+.memory-btn.is-primary { border-color: #5d7fa3; color: #5d7fa3; }
+.memory-btn.is-primary:hover { background: #5d7fa3; color: #fff; }
+.memory-btn:disabled { opacity: .6; cursor: default; }
+.memory-edit-editor { margin-top: 4px; }
+.memory-edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  resize: vertical;
+}
+.memory-edit-input.is-error { border-color: #c0392b; }
+.memory-edit-btns { display: flex; gap: 6px; margin-top: 6px; }
+.memory-edits { margin-top: 6px; border-top: 1px dashed var(--border-soft); padding-top: 6px; }
+.memory-edit-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 4px 8px;
+  align-items: center;
+  font-size: 11px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border-soft);
+}
+.memory-edit-old { color: var(--muted); text-decoration: line-through; opacity: .7; }
+.memory-edit-arrow { color: var(--muted); }
+.memory-edit-new { color: var(--text); font-weight: 500; }
+.memory-edit-time { grid-column: 1 / -1; color: var(--text-dim); font-size: 10px; }
+
 /* ───────────── trace 面板 ───────────── */
 
 .trace-panel { font-size: 12px; }
