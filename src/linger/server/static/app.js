@@ -35,6 +35,15 @@
     // 切步时只换显示可见性，不重建 DOM，所以「上一步 / 下一步」来回走不丢数据。
     wizardStep: 1,
     wizardDraft: {},          // 与 POST /v1/personas/draft/preview 的 draft 同构
+    // 市场（M4-C）。`marketListings` 是公共列表的缓存，
+    // `marketMine` 是「我的条目」，`marketOpenId` 是当前展开的详情。
+    // 三者都不参与对话链路——市场坏了不该让聊天挂掉。
+    marketListings: [],
+    marketMine: [],
+    marketOpenId: null,
+    // 人格摘要的缓存（含 owner / provenance）。上架按钮要靠 owner 判断归属，
+    // 而卡片渲染时手上已经有整份摘要，不必再请求一次。
+    personaCache: [],
   };
 
   /** 本机用户标识：localStorage 持久化。
@@ -125,6 +134,15 @@
     wizForbidden: $("wiz-forbidden"),
     wizKnowsNot: $("wiz-knows-not"),
     wizLeakPolicy: $("wiz-leak-policy"),
+    marketList: $("market-list"),
+    marketCount: $("market-count"),
+    marketHint: $("market-hint"),
+    marketDetail: $("market-detail"),
+    marketMineList: $("market-mine-list"),
+    marketMineCount: $("market-mine-count"),
+    marketMineEmpty: $("market-mine-empty"),
+    btnMarketRefresh: $("btn-market-refresh"),
+    btnMarketClose: $("btn-market-close"),
     scenarioList: $("scenario-list"),
     sceneCount: $("scene-count"),
     scenarioCreatePanel: $("scenario-create-panel"),
@@ -240,7 +258,11 @@
       } catch (_) { /* body 不是 JSON，用 statusText */ }
       throw new Error(`${resp.status} ${detail}`);
     }
-    return resp.json();
+    const out = await resp.json();
+    if (path.startsWith("/v1/personas") || path.startsWith("/v1/market")) {
+      try { console.log("DEBUG", path, JSON.stringify(Object.keys(out))); } catch (_) {}
+    }
+    return out;
   }
 
   /** 顶栏的登录态。**未登录时不隐藏任何功能**（判据 8：不弹登录墙）。 */
@@ -295,6 +317,9 @@
     state.userId = payload.user_id;
     try { localStorage.setItem("linger.user_id", payload.user_id); } catch (_) { /* 忽略 */ }
     renderAccount();
+    // 归属是服务端在登录后才盖章的，所以登录之后要把「我的人格」与市场重拉一遍：
+    // 上架按钮/「我的条目」都依赖最新的 owner，旧的那份会漏掉刚认领的卡。
+    refreshPersonaViews();
 
     const personas = [];
     if (state.personaId) personas.push(state.personaId);
@@ -1024,6 +1049,306 @@
     }
   }
 
+  // ───────────────────────── 人格市场（M4-C） ─────────────────────────
+  //
+  // 三条纪律（对应 issue #39 的判据 1 / 3 / 4）：
+  //
+  // 1. **看不用登录**。公共列表与详情是匿名可读的端点，这里就不给它们加任何
+  //    登录前置——不弹浮层、不拦点击、不跳转。未登录时唯一的变化是
+  //    「安装」按钮换成「登录后可安装」，一个提示，不是一堵墙。
+  // 2. **归属由服务端说，不由前端猜**。人格摘要里带 `owner`
+  //    （`provenance.owner`），只有 `owner` 非空且等于 `state.userId` 才是自己的卡。
+  //    「列表里的都是我的」这个假设是错的：模板实例化的人格是共享的一行，
+  //    可能是别人先认领的。
+  // 3. **市场失败不影响聊天**。每条请求各自 try/catch，出错只在市场面板里说，
+  //    绝不落到 showError（那条横幅在中栏对话区上方，会把聊天打断的错觉放大）。
+
+  const MARKET_STATUS_TEXT = {
+    pending_review: "待审核",
+    approved: "已上架",
+    rejected: "未通过",
+    unlisted: "已下架",
+  };
+
+  /** 自己的卡吗？判据 4 的唯一判据，**只此一处**。
+   *
+   * 未登录（`state.userId` 是匿名 id，`state.account` 为 null）时恒为 false：
+   * 匿名期造出来的卡没有归属，后端上架必然 403——前端就不该给它一个入口。
+   * 判断用 `state.userId` 而不是 `state.account.user_id`：登录后前者已被换成账号 id
+   * （既有行为），两者一致；未登录时只有前者存在。
+   */
+  function isOwnPersona(p) {
+    const me = state.account ? state.account.user_id : "";
+    if (!me) return false;
+    return Boolean(p && p.owner) && p.owner === me && p.owner === state.userId;
+  }
+
+  /** 创建人格时要带上的归属声明（判据 3）。
+   *
+   * 登录时带 `{owner: <账号 id>}`；**未登录时返回空对象**——
+   * 匿名卡没有主人是后端既定语义（`provenance.owner` 缺省 = 归属不明 = 不可上架），
+   * 前端不该替它编一个 id 出来。服务端会核对：声明的 id 不是当前账号就 403。
+   *
+   * 为什么不塞进 `persona.provenance`：人格卡是「她是谁」的描述，
+   * 归属是「她归谁」的事实。前者用户能改，后者只能由服务端按账号盖章。
+   */
+  function ownerClaim() {
+    const me = state.account ? state.account.user_id : "";
+    return me ? { owner: me } : {};
+  }
+
+  /** 这张卡能不能上架，以及为什么不能。返回 `{ok, reason}`。
+   *
+   * 三个前置各有一句人话：不是自己的 / 匿名期的卡 / 蒸馏产物（红线）。
+   * 蒸馏那条不是「先点了吃 403」——提前说清楚，用户不会以为自己被莫名拒绝。
+   */
+  function listingGate(p) {
+    if (!p) return { ok: false, reason: "人格不存在" };
+    if (String((p.provenance || {}).type || "").trim().toLowerCase() === "cloned") {
+      return { ok: false, reason: "蒸馏产物不可上架" };
+    }
+    if (!state.account) return { ok: false, reason: "登录后可上架" };
+    if (!isOwnPersona(p)) return { ok: false, reason: "只能上架自己名下的人格" };
+    return { ok: true, reason: "" };
+  }
+
+  function personaById(id) {
+    for (const p of state.personaCache || []) if (p.id === id) return p;
+    return null;
+  }
+
+  async function loadMarket() {
+    try {
+      const data = await api("/v1/market/listings");
+      state.marketListings = data.listings || [];
+      renderMarketList();
+    } catch (err) {
+      el.marketList.innerHTML =
+        `<p class="muted small">市场列表取不到：${escapeHtml(err.message || String(err))}</p>`;
+    }
+  }
+
+  async function loadMarketMine() {
+    if (!state.account) {
+      state.marketMine = [];
+      renderMarketMine();
+      return;
+    }
+    try {
+      const data = await api("/v1/market/mine");
+      state.marketMine = data.listings || [];
+    } catch (err) {
+      state.marketMine = [];
+      el.marketMineList.innerHTML =
+        `<p class="muted small">我的条目取不到：${escapeHtml(err.message || String(err))}</p>`;
+      el.marketMineCount.textContent = "0";
+      return;
+    }
+    renderMarketMine();
+  }
+
+  /** 登录态变化后把「我的人格」+ 市场两张单子重拉一遍。
+   *
+   * 为什么合成一个函数：这三处数据是同一件事的三个视角（我的卡 / 公共条目 / 我的条目），
+   * 分开调用迟早会漏一处，于是登录之后只有一半界面知道自己是谁。
+   */
+  async function refreshPersonaViews() {
+    await loadMyPersonas();
+    await loadMarket();
+    await loadMarketMine();
+  }
+
+  function renderMarketList() {
+    const items = state.marketListings;
+    el.marketCount.textContent = String(items.length);
+
+    if (!items.length) {
+      el.marketList.innerHTML =
+        '<p class="muted small">市场里还没有过审的人格。造一个，上架试试。</p>';
+      return;
+    }
+
+    el.marketList.innerHTML = "";
+    for (const it of items) {
+      const row = document.createElement("div");
+      row.className = "market-item";
+      row.dataset.listingId = it.id;
+
+      // 主体是按钮 = 看详情。**未登录也能点**（判据 1）
+      const openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.className = "market-open";
+      const meta = [it.summary, it.author_id ? `by ${it.author_id}` : ""]
+        .filter(Boolean).join(" · ");
+      openBtn.innerHTML =
+        `<div class="market-name">${escapeHtml(it.persona_name || it.title || it.id)}</div>` +
+        (meta ? `<div class="market-meta">${escapeHtml(meta)}</div>` : "");
+      openBtn.addEventListener("click", () => openMarketDetail(it.id));
+
+      const installBtn = document.createElement("button");
+      installBtn.type = "button";
+      installBtn.className = "market-install";
+      installBtn.textContent = state.account ? "安装" : "登录后可安装";
+      installBtn.addEventListener("click", () => installListing(it, installBtn));
+
+      row.appendChild(openBtn);
+      row.appendChild(installBtn);
+      el.marketList.appendChild(row);
+    }
+  }
+
+  function renderMarketMine() {
+    const items = state.marketMine;
+    el.marketMineCount.textContent = String(items.length);
+
+    if (!items.length) {
+      el.marketMineList.innerHTML =
+        `<p class="muted small">${state.account
+          ? "还没有上架的条目。在「我的人格」里点「上架」。"
+          : "登录后，这里会列出你上架的条目和审核状态。"}</p>`;
+      return;
+    }
+
+    el.marketMineList.innerHTML = "";
+    for (const it of items) {
+      const row = document.createElement("div");
+      row.className = "market-mine-item";
+      row.dataset.listingId = it.id;
+      const status = String(it.status || "");
+      row.innerHTML =
+        `<span class="grow">${escapeHtml(it.title || it.persona_name || it.id)}</span>` +
+        `<span class="market-status is-${escapeHtml(status.replace("_review", ""))}">` +
+        `${escapeHtml(MARKET_STATUS_TEXT[status] || status)}</span>`;
+
+      // 在架的才能下架；待审的取消上架后端不支持（状态机只允许 approved → unlisted），
+      // 所以这里不给按钮——给一个点了必然 409 的按钮，比不给更糟。
+      if (status === "approved") {
+        const unlistBtn = document.createElement("button");
+        unlistBtn.type = "button";
+        unlistBtn.className = "market-install";
+        unlistBtn.textContent = "下架";
+        unlistBtn.addEventListener("click", () => unlistListing(it, unlistBtn));
+        row.appendChild(unlistBtn);
+      }
+      el.marketMineList.appendChild(row);
+    }
+  }
+
+  /** 详情：公共端点，**未登录也读得到**（判据 1）。 */
+  async function openMarketDetail(listingId) {
+    state.marketOpenId = listingId;
+    el.marketDetail.hidden = false;
+    el.btnMarketClose.hidden = false;
+    el.marketDetail.innerHTML = '<p class="muted small">读取中…</p>';
+    try {
+      const it = await api(`/v1/market/listings/${encodeURIComponent(listingId)}`);
+      const persona = it.persona || {};
+      const meta = persona.meta || {};
+      const lines = (persona.samples || persona.sample_lines || []).slice(0, 6);
+      el.marketDetail.innerHTML =
+        `<h4>${escapeHtml(it.persona_name || it.title || it.id)}</h4>` +
+        `<div>${escapeHtml([meta.identity, meta.archetype].filter(Boolean).join(" · "))}</div>` +
+        `<div class="market-author">作者 ${escapeHtml(it.author_id || "—")}</div>` +
+        (lines.length
+          ? '<div class="market-lines">' +
+            lines.map((l) => `「${escapeHtml(l)}」`).join("<br>") + "</div>"
+          : "");
+    } catch (err) {
+      el.marketDetail.innerHTML =
+        `<p class="muted small">详情取不到：${escapeHtml(err.message || String(err))}</p>`;
+    }
+  }
+
+  function closeMarketDetail() {
+    state.marketOpenId = null;
+    el.marketDetail.hidden = true;
+    el.btnMarketClose.hidden = true;
+  }
+
+  async function installListing(item, btn) {
+    if (!state.account) {
+      // 不弹登录墙：只在市场面板里说一句，用户看不看得到市场完全不受影响。
+      el.marketHint.textContent = "安装需要登录——顶栏「登录」，本机的对话会一起带过去。";
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "安装中…";
+    try {
+      const res = await api(
+        `/v1/market/listings/${encodeURIComponent(item.id)}/install`,
+        { method: "POST" }
+      );
+      btn.textContent = "已安装";
+      el.marketHint.textContent = res.reused
+        ? `「${res.persona.name}」你之前装过，用的还是那一份。`
+        : `装好了：「${res.persona.name}」现在在你的人格列表里。`;
+      // 装完必须出现在「我的人格」里，否则用户会以为没成功
+      await loadMyPersonas();
+      await loadMarketMine();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "安装";
+      el.marketHint.textContent = "安装失败：" + (err.message || String(err));
+    }
+  }
+
+  /** 上架自己的一个人格。
+   *
+   * 归属（`owner`）不在这里传：它已经落在人格卡的 `provenance.owner` 上
+   * （创建时由服务端按当前账号写入）。上架只报 persona_id，
+   * 「这张卡归谁」由服务端拿库里的卡去判——前端说自己是谁不算数。
+   */
+  async function listPersona(p, btn) {
+    const gate = listingGate(p);
+    if (!gate.ok) {
+      el.marketHint.textContent = gate.reason;
+      return;
+    }
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "上架中…";
+    }
+    try {
+      const res = await api("/v1/market/listings", {
+        method: "POST",
+        body: JSON.stringify({ persona_id: p.id }),
+      });
+      el.marketHint.textContent = res.created
+        ? `「${res.title}」已送审，通过后会出现在市场里。`
+        : `「${res.title}」已经在市场里了（${MARKET_STATUS_TEXT[res.status] || res.status}）。`;
+      await loadMarketMine();
+      await loadMarket();
+    } catch (err) {
+      el.marketHint.textContent = "上架失败：" + (err.message || String(err));
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "上架";
+      }
+    }
+  }
+
+  async function unlistListing(item, btn) {
+    btn.disabled = true;
+    btn.textContent = "下架中…";
+    try {
+      await api(`/v1/market/listings/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      el.marketHint.textContent = `「${item.title || item.id}」已下架，已装过的人手里的副本不受影响。`;
+      await loadMarketMine();
+      await loadMarket();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "下架";
+      el.marketHint.textContent = "下架失败：" + (err.message || String(err));
+    }
+  }
+
+  el.btnMarketRefresh.addEventListener("click", async () => {
+    el.marketHint.textContent = "";
+    await loadMarket();
+    await loadMarketMine();
+  });
+  el.btnMarketClose.addEventListener("click", closeMarketDetail);
+
   // ───────────────────── 我的人格：列表 + 删除（M3-C） ─────────────────────
   //
   // 与上面的模板列表是两张不同的东西：
@@ -1038,7 +1363,8 @@
   async function loadMyPersonas() {
     try {
       const data = await api("/v1/personas");
-      renderMyPersonas(data.personas || []);
+      state.personaCache = data.personas || [];
+      renderMyPersonas(state.personaCache);
     } catch (err) {
       el.myPersonaList.innerHTML =
         `<p class="my-persona-empty">人格列表加载失败：${escapeHtml(err.message)}</p>`;
@@ -1087,6 +1413,21 @@
       delBtn.addEventListener("click", () => deletePersona(p, delBtn));
 
       item.appendChild(openBtn);
+      // 上架入口**只在自己的卡上出现**（判据 4）。
+      // 别人先认领了的模板行、匿名期造出来的无主卡，这里连按钮都不生——
+      // 不是渲染了再置灰，是根本不进 DOM：前者看不见就点不到，
+      // 后者（置灰）会让用户反复点一个永远不会成的事。
+      const gate = listingGate(p);
+      if (gate.ok) {
+        const listBtn = document.createElement("button");
+        listBtn.type = "button";
+        listBtn.className = "my-persona-list-entry";
+        listBtn.dataset.action = "list";
+        listBtn.title = "上架到人格市场";
+        listBtn.textContent = "上架";
+        listBtn.addEventListener("click", () => listPersona(p, listBtn));
+        item.appendChild(listBtn);
+      }
       item.appendChild(delBtn);
       el.myPersonaList.appendChild(item);
 
@@ -1239,7 +1580,7 @@
     try {
       const created = await api("/v1/personas", {
         method: "POST",
-        body: JSON.stringify({ persona }),
+        body: JSON.stringify({ persona, ...ownerClaim() }),
       });
       // 收掉生成面板，避免用户以为还要再点一次
       el.personaDraft.hidden = true;
@@ -1417,7 +1758,7 @@
     try {
       const created = await api("/v1/personas", {
         method: "POST",
-        body: JSON.stringify({ persona }),
+        body: JSON.stringify({ persona, ...ownerClaim() }),
       });
       el.distillResult.hidden = true;
       el.distillPanel.hidden = true;
@@ -1740,7 +2081,7 @@
       });
       const created = await api("/v1/personas", {
         method: "POST",
-        body: JSON.stringify({ persona: preview.persona }),
+        body: JSON.stringify({ persona: preview.persona, ...ownerClaim() }),
       });
       const name = created.name || draft.meta.name;
       resetWizard();
@@ -2040,7 +2381,7 @@
       // 入口 A：模板实例化（模板 → 库里的行）
       const persona = await api("/v1/personas", {
         method: "POST",
-        body: JSON.stringify({ template_id: state.templateId }),
+        body: JSON.stringify({ template_id: state.templateId, ...ownerClaim() }),
       });
       await openSession(persona.id, state.personaName);
     } catch (err) {
@@ -2304,6 +2645,8 @@
     // 必须先记住匿名 id 再退出，否则退出后写到账号名下就成了跨账号写（后端会 409）。
     state.userId = ensureUserId();
     renderAccount();
+    // 退出后 owner 不再是自己的 → 上架入口必须立刻消失（判据 4 的反向）
+    refreshPersonaViews();
     setConn("已退出 · 数据在本机", "pill-idle");
   });
   el.btnAuthSwitch.addEventListener("click", () => {
@@ -2324,10 +2667,30 @@
 
   // 先确认登录态再拉数据：人格列表与「我的人格」都按 user_id 过滤，
   // 顺序反了会先按匿名 id 渲染一遍再闪一下换成账号的。
+  // 给自动化测试留的把手（#39）。**不是 API**：只暴露「页面按钮绑定的那几个函数」，
+  // 让测试能不打 DOM 就驱动四条创建入口——否则每条判据都要模拟一整张表单，
+  // 测的就不再是「有没有带 owner」而是「我的假 DOM 写得对不对」。
+  // 生产环境里它就是几个挂在 window 上的函数引用，不改变任何行为。
+  window.__lingerTestHooks = {
+    // 向导只认 DOM 里的输入值，所以测试得先把名字填进去（页面里用户也是这么做的）
+    fillWizardName: (name) => { el.wizName.value = name; },
+    startSession,
+    confirmDraft,
+    confirmDistill,
+    wizardCreate,
+    openSession,
+    isOwnPersona,
+    listingGate,
+    ownerClaim,
+  };
+
   restoreAccount().finally(() => {
     loadTemplates();
     loadMyPersonas();
     loadScenarios();
+    // 市场与上面三块互不依赖：失败了只影响市场面板，聊天照旧。
+    loadMarket();
+    loadMarketMine();
   });
 
   // 页面打开时顺手探一下服务是否活着

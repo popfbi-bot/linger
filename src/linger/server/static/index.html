@@ -326,6 +326,32 @@
       </div>
     </section>
 
+    <!-- M4-C：人格市场。**面板常驻但收起**——未登录也要能逛（判据 1：
+         「不弹登录墙」），所以它不是浮层、不拦任何操作，只是一个可以展开的区块。
+         登录与否只影响能不能「上架 / 安装」，不影响「看得见」。 -->
+    <section class="card" id="market-card">
+      <h2>人格市场 <span class="count" id="market-count">—</span></h2>
+      <p class="hint">看看别人造的人。看不用登录；上架和安装要登录。</p>
+      <div class="market-actions">
+        <button type="button" id="btn-market-refresh" class="btn-ghost">刷新</button>
+        <button type="button" id="btn-market-close" class="btn-ghost" hidden>收起详情</button>
+        <span id="market-hint" class="muted small"></span>
+      </div>
+      <div id="market-list" class="market-list">
+        <p class="muted small">加载中…</p>
+      </div>
+      <div id="market-detail" class="market-detail" hidden></div>
+
+      <!-- 我的条目：所有状态（待审 / 在架 / 被拒 / 已下架）。与上面的公共列表分开，
+           因为这两张单子回答不同的问题：「有什么可以装」和「我送上去的怎么样了」。 -->
+      <div class="market-mine">
+        <h3 class="market-subtitle">我的条目 <span class="count" id="market-mine-count">0</span></h3>
+        <div id="market-mine-list" class="market-mine-list">
+          <p class="muted small" id="market-mine-empty">登录后，这里会列出你上架的条目和审核状态。</p>
+        </div>
+      </div>
+    </section>
+
     <section class="card" id="scene-progress-card" hidden>
       <h2>场景进度</h2>
       <div id="scene-progress" class="scene-progress"></div>

@@ -86,12 +86,34 @@ class CreatePersonaRequest(BaseModel):
     - 入口 A（模板市场）：只给 `template_id`，从预置模板实例化。
     - 入口 B（一句话生成）：把 `/v1/personas/generate` 返回的 `persona` **原样**传回，
       确认落库。服务端会重发 id 并标记 `provenance.type = "generated"`。
+
+    `owner`（#39 补）：**声明这个人格归谁**。人格卡本身不带身份，归属只存在
+    `provenance.owner` 里。`/v1/personas` 这条创建路径上没有别的字段携带它，
+    于是「用户自己造的人格」在市场里没有主人——上架必然 403。
+    单个顶层字段而不是让前端自己往 `persona.provenance` 里塞：
+    服务端要按当前账号核对它（声称别人 → 403），核对点只有一处。
     """
 
     template_id: str | None = Field(default=None, description="人格模板 id，如 linxi / laojiang")
     persona: dict[str, Any] | None = Field(
         default=None, description="完整人格卡（生成预览确认后落库）"
     )
+    owner: str | None = Field(
+        default=None,
+        description="归属账号的 user_id。登录时带上（服务端核对必须是本人），匿名时不带",
+    )
+
+    @field_validator("owner")
+    @classmethod
+    def _owner_blank_to_none(cls, v: str | None) -> str | None:
+        """空字符串等价于「不给」，免得库里多个 `owner: ""`。
+
+        没 owner 与空 owner 在归属检查里等价（都是「不归谁」），但数据上别留两种写法的空值。
+        """
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
 
     @field_validator("template_id")
     @classmethod
@@ -444,13 +466,63 @@ def _resolve_auth_secret() -> str:
 # --------------------------------------------------------------------------- #
 
 
+def _owner_of_card(card) -> str:
+    """人格的归属（`provenance.owner`）。**没有就是空字符串**，不是 None。
+
+    判据 4 的 DOM 断言只看一件事：`owner` 非空且等于 `state.userId`。
+    所以这里给的是可以直接比较的字符串，前端不必再判一层 None。
+    """
+    return str((card.provenance or {}).get("owner") or "").strip()
+
+
+def _declared_owner(account: Account | None, body: CreatePersonaRequest) -> str | None:
+    """这张卡该归属谁（#39 判据 3）。**只认当前账号，不认客户端的主张。**
+
+    三种情况：
+      · 没登录 → `None`。匿名卡没有归属，于是一律不可上架——这是后端既定语义
+        （归属检查要 `owner == 当前用户`），前端因此**不写** owner。
+      · 登录且声明了自己的 id → 用它。
+      · 登录却声明了别人的 id → 403。这不是「参数错了」：声称别人的人格，
+        正是市场归属检查要拦的那件事。**在落库之前拦**，不留半张卡。
+    """
+    if account is None:
+        return None
+    if body.owner is not None and body.owner != account.user_id:
+        raise HTTPException(status_code=403, detail="不能把人格归属声明给别人")
+    return account.user_id
+
+
+def _stamp_owner(card: PersonaCard, owner: str | None) -> PersonaCard:
+    """把归属写进 `provenance.owner`，其余 provenance 字段原样保留。
+
+    为什么不覆盖整份 provenance：`type` / `template` / `origin` 都是可审计的事实
+    （「这张卡从哪来」），落库这一步只该**补**一件它知道的事——主人是谁。
+
+    `owner is None`（匿名）时一个字段都不动：匿名卡保持「没有传承」的原样，
+    而不是被写成一个空字符串。
+    """
+    if owner:
+        card.provenance = {**(card.provenance or {}), "owner": owner}
+    return card
+
+
 def _persona_brief(card) -> dict[str, Any]:
+    """人格摘要。**带 owner 与 provenance**（#39 补）。
+
+    为什么要露 owner：判据 4 要求「上架入口只出现在自己的卡上」，
+    而前端唯一能据以判断的就是这个字段。让前端去猜（比如「我列表里的都是我的」）
+    在模板实例化共享人格的情况下是错的——那一行可能是别人先认领的。
+    provenance 一起回：上架按钮还要靠 `type == cloned` 提前置灰，
+    不必等点了才吃一个 403。
+    """
     return {
         "id": card.id,
         "name": card.name,
         "identity": card.meta.identity,
         "archetype": card.meta.archetype,
         "version": card.version,
+        "owner": _owner_of_card(card),
+        "provenance": dict(card.provenance or {}),
     }
 
 
@@ -1115,7 +1187,16 @@ def create_app(
         body: CreatePersonaRequest,
         repo: Repository = Depends(get_repo),
         orch: Orchestrator = Depends(get_orch),
+        account: Account | None = Depends(optional_actor),
     ) -> dict[str, Any]:
+        """创建人格。**可选登录**：匿名玩法不变，登录只多一件事——记下主人是谁。
+
+        归属是市场的前置：`market/service.py::create_listing` 要求
+        `provenance.owner == 当前 user_id`，而落库这一步原先只补 `type`。
+        于是「用户自己造的人格」在市场里全是无主的，上架必然 403（#39 的判据 3）。
+        """
+        owner = _declared_owner(account, body)
+
         # 入口 B：生成预览确认后落库
         if body.persona is not None:
             try:
@@ -1134,7 +1215,7 @@ def create_app(
                 **(card.provenance or {}),
                 "type": incoming_type or "generated",
             }
-            repo.save_persona(card)
+            repo.save_persona(_stamp_owner(card, owner))
             return _persona_brief(card)
 
         # 入口 A：模板实例化
@@ -1142,6 +1223,11 @@ def create_app(
             card = orch.persona_factory.create(body.template_id, repo)
         except (FileNotFoundError, KeyError, ValueError) as exc:
             raise HTTPException(status_code=404, detail=f"人格模板不存在: {body.template_id}") from exc
+        # 模板实例化是**幂等**的：第一个人点「林汐」时建了那一行，后面所有人点都拿到它。
+        # 已经有人认领的卡不会被后来者改写主人（否则谁点一下就把别人的卡抢走了）；
+        # 无主的那一张由**第一个登录用户**认领——这正是「点了一个模板，然后上架」的路。
+        if owner and not _owner_of_card(card):
+            repo.save_persona(_stamp_owner(card, owner))
         return _persona_brief(card)
 
     @app.delete("/v1/personas/{persona_id}")
@@ -1573,13 +1659,9 @@ def create_app(
             return ""
         return user_id[:6] + "***" + user_id[-2:]
 
-    def _persona_brief(card: PersonaCard) -> dict[str, Any]:
-        return {
-            "id": card.id,
-            "name": card.name,
-            "identity": card.meta.identity,
-            "provenance_type": (card.provenance or {}).get("type", ""),
-        }
+    # 市场侧复用模块级的 `_persona_brief`（它带 owner 与 provenance）：
+    # 外壳形状与 `_listing_detail` 一致，但**同一份人格摘要只有一个定义**——
+    # 两处各写一份的后果是「列表里说有 owner、安装返回说没有」，前端得猜信谁。
 
     def _listing_detail(listing: Any) -> dict[str, Any]:
         return {
