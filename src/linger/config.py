@@ -89,6 +89,14 @@ class Settings:
         default_factory=lambda: _env_int("LINGER_AUTH_TOKEN_TTL", 30 * 24 * 3600)
     )
 
+    # 人格市场的审核员名单（M4-B）不在这里。
+    #
+    # 「谁是审核员」是部署事实，而 `settings` 是 import 时求值一次的**快照**：
+    # 进程起来之后再换班（或测试里 monkeypatch），它不会跟着变。
+    # 读一个过期的空名单等于**审核权静默消失**——那是安全判定不能有的失败形态。
+    # 所以名单由 `market.service.reviewer_emails()` 每次现读
+    # `LINGER_MARKET_REVIEWER_EMAILS`，不经过这里。
+
     # 上下文预算（§3.6.2）
     context_budget_tokens: int = 8000
 

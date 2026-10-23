@@ -154,3 +154,32 @@ CREATE TABLE IF NOT EXISTS account (
   token_epoch   INTEGER NOT NULL DEFAULT 1,
   created_at    TIMESTAMPTZ NOT NULL
 );
+
+-- 人格市场（M4-B）。上架状态**不进 persona 表**：上架是人格之外的一层关系，
+-- 同一个人格可以下架再上架，一个条目对应无数份安装副本。
+CREATE TABLE IF NOT EXISTS market_listing (
+  id           TEXT PRIMARY KEY,
+  persona_id   TEXT NOT NULL,
+  author_id    TEXT NOT NULL,
+  title        TEXT NOT NULL DEFAULT '',
+  summary      TEXT NOT NULL DEFAULT '',
+  snapshot     JSONB NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending_review',
+  listed_at    TIMESTAMPTZ,
+  reviewed_at  TIMESTAMPTZ,
+  reviewer_id  TEXT NOT NULL DEFAULT '',
+  review_note  TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_listing_live
+  ON market_listing (persona_id) WHERE status IN ('pending_review', 'approved');
+CREATE INDEX IF NOT EXISTS idx_listing_status ON market_listing (status, listed_at);
+
+-- 主键 (listing_id, user_id) 就是判据 6 的幂等落地：
+-- 并发窗口由唯一键兜住，而不是靠调用方先查一次（先查后写之间永远有窗口）。
+CREATE TABLE IF NOT EXISTS market_install (
+  listing_id   TEXT NOT NULL,
+  user_id      TEXT NOT NULL,
+  persona_id   TEXT NOT NULL,
+  installed_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (listing_id, user_id)
+);

@@ -14,6 +14,12 @@ from pathlib import Path
 from typing import Any
 
 from ..accounts.models import Account
+from ..market.models import (
+    STATUS_APPROVED,
+    STATUS_PENDING,
+    InstalledCopy,
+    MarketListing,
+)
 from ..models import (
     PAD,
     AffectState,
@@ -133,6 +139,31 @@ CREATE TABLE IF NOT EXISTS account (
   display_name TEXT,
   token_epoch INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS market_listing (
+  id            TEXT PRIMARY KEY,
+  persona_id    TEXT NOT NULL,
+  author_id     TEXT NOT NULL,
+  title         TEXT NOT NULL DEFAULT '',
+  summary       TEXT NOT NULL DEFAULT '',
+  snapshot      TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'pending_review',
+  listed_at     TEXT,
+  reviewed_at   TEXT,
+  reviewer_id   TEXT NOT NULL DEFAULT '',
+  review_note   TEXT NOT NULL DEFAULT ''
+);
+-- 同一个人格不能同时有两条"待审/在架"的条目。
+-- 部分唯一索引 = 「被拒/下架的可以再建一条」和「活着的同时只能有一条」同时成立。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_listing_live
+  ON market_listing (persona_id) WHERE status IN ('pending_review', 'approved');
+CREATE INDEX IF NOT EXISTS idx_listing_status ON market_listing (status, listed_at);
+CREATE TABLE IF NOT EXISTS market_install (
+  listing_id   TEXT NOT NULL,
+  user_id      TEXT NOT NULL,
+  persona_id   TEXT NOT NULL,
+  installed_at TEXT NOT NULL,
+  PRIMARY KEY (listing_id, user_id)
 );
 """
 
@@ -620,6 +651,131 @@ class SQLiteRepository(Repository):
     def get_trace(self, turn_id: int) -> dict[str, Any] | None:
         row = self.conn.execute("SELECT payload FROM trace WHERE turn_id=?", (turn_id,)).fetchone()
         return None if row is None else json.loads(row["payload"])
+
+    # ---- 人格市场（M4-B） ---------------------------------------------- #
+    def _listing(self, row: Any) -> MarketListing:
+        return MarketListing(
+            id=row["id"],
+            persona_id=row["persona_id"],
+            author_id=row["author_id"],
+            title=row["title"],
+            summary=row["summary"],
+            snapshot=json.loads(row["snapshot"]),
+            status=row["status"],
+            listed_at=_pd(row["listed_at"]),
+            reviewed_at=_pd(row["reviewed_at"]),
+            reviewer_id=row["reviewer_id"],
+            review_note=row["review_note"],
+        )
+
+    def create_listing(self, listing: MarketListing) -> MarketListing:
+        """插一条；撞上「同人格已有待审/在架」的部分唯一索引时，把已有那条还回去。"""
+        try:
+            self.conn.execute(
+                "INSERT INTO market_listing (id, persona_id, author_id, title, summary, snapshot,"
+                " status, listed_at, reviewed_at, reviewer_id, review_note)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    listing.id,
+                    listing.persona_id,
+                    listing.author_id,
+                    listing.title,
+                    listing.summary,
+                    _j(listing.snapshot),
+                    listing.status,
+                    _dt(listing.listed_at),
+                    _dt(listing.reviewed_at),
+                    listing.reviewer_id,
+                    listing.review_note,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            self.conn.rollback()
+            existing = self.find_live_listing(listing.persona_id)
+            if existing is None:  # pragma: no cover - 约束与查询不一致
+                raise
+            return existing
+        self.conn.commit()
+        return listing
+
+    def get_listing(self, listing_id: str) -> MarketListing | None:
+        row = self.conn.execute(
+            "SELECT * FROM market_listing WHERE id=?", (listing_id,)
+        ).fetchone()
+        return None if row is None else self._listing(row)
+
+    def list_listings(self, limit: int = 50) -> list[MarketListing]:
+        rows = self.conn.execute(
+            "SELECT * FROM market_listing ORDER BY listed_at DESC, id LIMIT ?", (limit,)
+        ).fetchall()
+        return [self._listing(r) for r in rows]
+
+    def find_live_listing(self, persona_id: str) -> MarketListing | None:
+        row = self.conn.execute(
+            "SELECT * FROM market_listing WHERE persona_id=? AND status IN (?,?)"
+            " ORDER BY listed_at DESC LIMIT 1",
+            (persona_id, STATUS_PENDING, STATUS_APPROVED),
+        ).fetchone()
+        return None if row is None else self._listing(row)
+
+    def review_listing(
+        self,
+        listing_id: str,
+        *,
+        from_status: str,
+        to_status: str,
+        reviewer_id: str,
+        note: str,
+        reviewed_at: Any,
+    ) -> bool:
+        """条件更新。`rowcount==1` 才算真改了——重复审核返回 False，不是覆写。"""
+        cur = self.conn.execute(
+            "UPDATE market_listing SET status=?, reviewer_id=?, review_note=?, reviewed_at=?"
+            " WHERE id=? AND status=?",
+            (to_status, reviewer_id, note, _dt(reviewed_at), listing_id, from_status),
+        )
+        self.conn.commit()
+        return cur.rowcount == 1
+
+    def save_install(self, record: InstalledCopy) -> bool:
+        """主键冲突返回 False（并发后到者），不是抛异常。"""
+        try:
+            self.conn.execute(
+                "INSERT INTO market_install (listing_id, user_id, persona_id, installed_at)"
+                " VALUES (?,?,?,?)",
+                (
+                    record.listing_id,
+                    record.user_id,
+                    record.persona_id,
+                    _dt(record.installed_at),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            self.conn.rollback()
+            return False
+        self.conn.commit()
+        return True
+
+    def get_install(self, listing_id: str, user_id: str) -> InstalledCopy | None:
+        row = self.conn.execute(
+            "SELECT * FROM market_install WHERE listing_id=? AND user_id=?",
+            (listing_id, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return InstalledCopy(
+            listing_id=row["listing_id"],
+            user_id=row["user_id"],
+            persona_id=row["persona_id"],
+            installed_at=_pd(row["installed_at"]),
+        )
+
+    def drop_install(self, listing_id: str, user_id: str) -> None:
+        self.conn.execute(
+            "DELETE FROM market_install WHERE listing_id=? AND user_id=?",
+            (listing_id, user_id),
+        )
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()

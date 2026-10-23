@@ -26,6 +26,12 @@ from pathlib import Path
 from typing import Any
 
 from ..accounts.models import Account
+from ..market.models import (
+    STATUS_APPROVED,
+    STATUS_PENDING,
+    InstalledCopy,
+    MarketListing,
+)
 from ..models import (
     PAD,
     AffectState,
@@ -704,6 +710,129 @@ class PostgresRepository(Repository):
         return None if row is None else row["payload"]
 
     # ---- 关闭 ---------------------------------------------------------- #
+    # ---- 人格市场（M4-B） ---------------------------------------------- #
+    def _listing(self, row: Row) -> MarketListing:
+        return MarketListing(
+            id=row["id"],
+            persona_id=row["persona_id"],
+            author_id=row["author_id"],
+            title=row["title"],
+            summary=row["summary"],
+            snapshot=row["snapshot"],
+            status=row["status"],
+            listed_at=row["listed_at"],
+            reviewed_at=row["reviewed_at"],
+            reviewer_id=row["reviewer_id"],
+            review_note=row["review_note"],
+        )
+
+    def create_listing(self, listing: MarketListing) -> MarketListing:
+        """撞上部分唯一索引（同人格已有待审/在架）时，把已有那条还回去。"""
+        try:
+            self._run(
+                "INSERT INTO market_listing (id, persona_id, author_id, title, summary, snapshot,"
+                " status, listed_at, reviewed_at, reviewer_id, review_note)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    listing.id,
+                    listing.persona_id,
+                    listing.author_id,
+                    listing.title,
+                    listing.summary,
+                    _jd(listing.snapshot),
+                    listing.status,
+                    _aware(listing.listed_at),
+                    _aware(listing.reviewed_at),
+                    listing.reviewer_id,
+                    listing.review_note,
+                ),
+            )
+        except Exception as exc:  # psycopg 的 UniqueViolation，不 import 也能判
+            if "unique" not in str(exc).lower() and "duplicate" not in str(exc).lower():
+                raise
+            existing = self.find_live_listing(listing.persona_id)
+            if existing is None:  # pragma: no cover
+                raise
+            return existing
+        return listing
+
+    def get_listing(self, listing_id: str) -> MarketListing | None:
+        row = self._one("SELECT * FROM market_listing WHERE id=%s", (listing_id,))
+        return None if row is None else self._listing(row)
+
+    def list_listings(self, limit: int = 50) -> list[MarketListing]:
+        rows = self._run(
+            "SELECT * FROM market_listing ORDER BY listed_at DESC NULLS LAST, id LIMIT %s",
+            (limit,),
+        )
+        return [self._listing(r) for r in rows]
+
+    def find_live_listing(self, persona_id: str) -> MarketListing | None:
+        row = self._one(
+            "SELECT * FROM market_listing WHERE persona_id=%s AND status IN (%s,%s)"
+            " ORDER BY listed_at DESC NULLS LAST LIMIT 1",
+            (persona_id, STATUS_PENDING, STATUS_APPROVED),
+        )
+        return None if row is None else self._listing(row)
+
+    def review_listing(
+        self,
+        listing_id: str,
+        *,
+        from_status: str,
+        to_status: str,
+        reviewer_id: str,
+        note: str,
+        reviewed_at: Any,
+    ) -> bool:
+        """条件更新。返回 False = 状态已不是 from_status（重复审核 / 并发后到者）。"""
+        with self._ensure_pool().connection() as conn:
+            cur = conn.execute(
+                "UPDATE market_listing SET status=%s, reviewer_id=%s, review_note=%s,"
+                " reviewed_at=%s WHERE id=%s AND status=%s",
+                (to_status, reviewer_id, note, _aware(reviewed_at), listing_id, from_status),
+            )
+            return cur.rowcount == 1
+
+    def save_install(self, record: InstalledCopy) -> bool:
+        """主键冲突返回 False（并发后到者）。"""
+        try:
+            self._run(
+                "INSERT INTO market_install (listing_id, user_id, persona_id, installed_at)"
+                " VALUES (%s,%s,%s,%s)",
+                (
+                    record.listing_id,
+                    record.user_id,
+                    record.persona_id,
+                    _aware(record.installed_at),
+                ),
+            )
+        except Exception as exc:
+            if "unique" not in str(exc).lower() and "duplicate" not in str(exc).lower():
+                raise
+            return False
+        return True
+
+    def get_install(self, listing_id: str, user_id: str) -> InstalledCopy | None:
+        row = self._one(
+            "SELECT * FROM market_install WHERE listing_id=%s AND user_id=%s",
+            (listing_id, user_id),
+        )
+        if row is None:
+            return None
+        return InstalledCopy(
+            listing_id=row["listing_id"],
+            user_id=row["user_id"],
+            persona_id=row["persona_id"],
+            installed_at=row["installed_at"],
+        )
+
+    def drop_install(self, listing_id: str, user_id: str) -> None:
+        self._run(
+            "DELETE FROM market_install WHERE listing_id=%s AND user_id=%s",
+            (listing_id, user_id),
+        )
+
     def close(self) -> None:
         """真的关池，且可重入（HTTP 层的 shutdown 与测试 teardown 都会调）。"""
         pool, self._pool = self._pool, None
