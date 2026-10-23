@@ -178,6 +178,18 @@
   **教训**：base64 解决转义问题，但解决不了「文件漏贴」；
   收到 base64 patch 后先核对 commit message 的文件清单与实际 diff 是否一致，
   再进入验收。
+- 🔴 **#32 第一棒交付失败，已重做（2026-10-23，#32 第二棒）**：
+  NPC 的 4 段 base64 里第 1 段被评论通道**压缩变形**（`\x08` 游程 + 字节替换），
+  恰好吃掉 `postgres.py` 的 diff 头 + 类定义 + 前几个方法（约 7000~18300 字节）。
+  我这边解码出 `postgres_schema.sql`（140 行）与 `tests/test_postgres_repo.py`
+  （476 行）碎片，但后者**有 f-string 语法错误**（`{{b[0] for b in bad]}`），
+  `py_compile` 报 SyntaxError——说明 NPC 自报的「685 passed」与文件对不上。
+  按验收纪律：**不替 NPC 修代码、不把来源不可靠的碎片提交进 main**。
+  已与 NPC 对齐：选**方案 A 重新开工**，重新发开工指令（`#32` 评论里），
+  约定 base64 单段 / 4 的倍数折行 / 贴前 `git apply --check` 自检 /
+  贴真实 pytest 输出。NPC 承诺基于当前 main 重写 `postgres.py` + 修正测试。
+  工作区留档：`recovered_postgres_schema.sql`、`recovered_test_postgres_repo.py`
+  （仅诊断证据，非交付物）。
 - ✅ **端到端多轮验收完成**（2026-10-23 晨，真模型 + 真实服务器，非 TestClient）：
   起 `serve_ds.py` 连跑四轮深度倾诉，**回复质量与状态联动全部正常**——
   陪伴档案跨轮累积（中年期保持、角色 1→2 个）、
