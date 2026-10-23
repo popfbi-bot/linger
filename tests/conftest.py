@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -20,6 +21,59 @@ from _fakes import FakeEmbedder  # noqa: E402,F401
 from linger.memory.embedding import HashEmbedder  # noqa: E402
 from linger.models import PersonaCard  # noqa: E402
 from linger.storage.sqlite import SQLiteRepository  # noqa: E402
+
+# --------------------------------------------------------------------------- #
+# 读不出中文文件名的环境（验收用）
+# --------------------------------------------------------------------------- #
+# 现象：`src/linger/social/data/*.md` 的文件名是中文。Linux 与真 Windows 上
+# `Path.exists()` / `read_text()` 都正常，但在**某些 Windows 兼容层**
+# （本次验收用 Wine 跑 Windows CPython 3.11 时踩到）里，对这些文件名
+# `open()` 直接 ENOENT、连 `write_bytes()` 都建不出来。于是两份语料一条都
+# 加载不出来，test_roles / test_social / test_toxic_signals / test_companion
+# 全线红——这跟被测代码一个字都没关系。
+#
+# 这里用产品侧的 `LINGER_SOCIAL_DATA_DIR` + `LINGER_SOCIAL_NAME_MAP` 两个开关：
+# 语料照原内容放进 `tests/_cjk_corpus/`，磁盘名是 ASCII、逻辑名仍是中文。
+# 那两个开关不是为测试造的——中文文件名在解压工具、同步盘、兼容层里被弄坏
+# 是常见事故，产品侧留「换目录 / 换磁盘名」的出口，比逼人改数据文件名诚实。
+_CJK_CORPUS = Path(__file__).resolve().parent / "_cjk_corpus"
+_CJK_MAP_FILE = Path(__file__).resolve().parent / "_cjk_corpus_map.json"
+
+
+def _cjk_names_unreadable() -> bool:
+    import platform
+
+    if platform.system() != "Windows":
+        return False
+    import linger.social.knowledge as knowledge
+
+    names = [f[0] for f in knowledge._CORPORA]
+    # 不能靠 `glob`/`iterdir` 判断：返回的已经是乱码，只能按常量名逐个探。
+    return not any((knowledge._DATA_DIR / n).exists() for n in names)
+
+
+@pytest.fixture(autouse=True)
+def _ascii_corpus_when_names_unreadable(monkeypatch):
+    """中文文件名读不出来时，把语料目录与磁盘名映射切到 ASCII 副本。"""
+    if not _cjk_names_unreadable():
+        return
+    mapping = json.loads(_CJK_MAP_FILE.read_text("utf-8"))
+    monkeypatch.setenv("LINGER_SOCIAL_DATA_DIR", str(_CJK_CORPUS))
+    monkeypatch.setenv("LINGER_SOCIAL_NAME_MAP", json.dumps(mapping, ensure_ascii=False))
+
+    import linger.social.knowledge as knowledge
+    import linger.social.roles as roles
+
+    # 模块级常量与默认参数在 import 时就绑好了，这里一并换掉。
+    monkeypatch.setattr(knowledge, "_DATA_DIR", _CJK_CORPUS)
+    monkeypatch.setattr(knowledge, "_NAME_MAP", dict(mapping))
+    monkeypatch.setattr(roles, "_DATA_DIR", _CJK_CORPUS)
+    monkeypatch.setattr(roles, "_NAME_MAP", dict(mapping))
+    for cls in (knowledge.SocialKnowledge, roles.RelationRoleKnowledge):
+        defaults = list(cls.__init__.__defaults__ or ())
+        if defaults:
+            defaults[0] = _CJK_CORPUS
+            monkeypatch.setattr(cls.__init__, "__defaults__", tuple(defaults))
 
 
 @pytest.fixture
@@ -78,8 +132,8 @@ def client(repo: SQLiteRepository, persona: PersonaCard):
     persona fixture 已经把 linxi 人格存进 repo。
     LLM 与嵌入器用假件：免密钥、免网络、确定性。
     """
-    from fastapi.testclient import TestClient
     from _fakes import FakeLLM
+    from fastapi.testclient import TestClient
 
     from linger.server.app import create_app
 

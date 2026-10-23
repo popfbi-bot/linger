@@ -32,6 +32,7 @@ from ..models import (
     Session,
     TraceRecord,
     Turn,
+    UsageRecord,
 )
 from .base import Repository
 
@@ -165,6 +166,32 @@ CREATE TABLE IF NOT EXISTS market_install (
   installed_at TEXT NOT NULL,
   PRIMARY KEY (listing_id, user_id)
 );
+-- LLM 用量流水（M4-D）。**没有外键、没有 (persona_id, user_id)**：
+-- 用量是「这段进程花了多少钱」，不是「谁花的钱」——按用户/人格的分摊
+-- 需要一套账号体系之外的计费模型，明确超出范围（见 issue #36 约束）。
+-- created_at 只到秒的 ISO 串（day 字段由查询时切出来）：存 day 列会让
+-- 「跨零点的那一条算哪天」变成写的时候就要拍板的问题，而那是看板的决定。
+CREATE TABLE IF NOT EXISTS llm_usage (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at    TEXT NOT NULL,
+  provider      TEXT NOT NULL,
+  model         TEXT NOT NULL,
+  purpose       TEXT NOT NULL DEFAULT 'chat',
+  ok            INTEGER NOT NULL DEFAULT 1,
+  degraded      INTEGER NOT NULL DEFAULT 0,
+  error         TEXT,
+  elapsed_ms    INTEGER NOT NULL DEFAULT 0,
+  chunks        INTEGER NOT NULL DEFAULT 0,
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  skipped       TEXT,
+  tokens_in     INTEGER,
+  tokens_out    INTEGER,
+  tokens_cached INTEGER NOT NULL DEFAULT 0,
+  estimated     INTEGER NOT NULL DEFAULT 1
+);
+-- 索引只为「按时间范围取明细」这一件事。聚合（GROUP BY provider/day）
+-- 不在写路径上，也不建物化视图：看板是查的时候算的。
+CREATE INDEX IF NOT EXISTS idx_usage_created ON llm_usage (created_at);
 """
 
 
@@ -174,6 +201,31 @@ def _dt(v: datetime | None) -> str | None:
 
 def _pd(s: str | None) -> datetime | None:
     return None if not s else datetime.fromisoformat(s)
+
+
+def _as_utc(v: datetime) -> datetime:
+    return v if v.tzinfo is not None else v.replace(tzinfo=timezone.utc)
+
+
+def _usage_from_row(r: sqlite3.Row) -> UsageRecord:
+    return UsageRecord(
+        id=int(r["id"]),
+        created_at=_pd(r["created_at"]) or datetime.now(timezone.utc),
+        provider=r["provider"],
+        model=r["model"],
+        purpose=r["purpose"],
+        ok=bool(r["ok"]),
+        degraded=bool(r["degraded"]),
+        error=r["error"],
+        elapsed_ms=int(r["elapsed_ms"] or 0),
+        chunks=int(r["chunks"] or 0),
+        attempts=int(r["attempts"] or 0),
+        skipped=_pj(r["skipped"], []),
+        tokens_in=r["tokens_in"],
+        tokens_out=r["tokens_out"],
+        tokens_cached=int(r["tokens_cached"] or 0),
+        estimated=bool(r["estimated"]),
+    )
 
 
 def _j(v: Any) -> str:
@@ -639,6 +691,50 @@ class SQLiteRepository(Repository):
             (persona_id,),
         ).fetchall()
         return [r["user_id"] for r in rows]
+
+    # ---- LLM 用量（M4-D） ---------------------------------------------- #
+    def record_usage(self, record: UsageRecord) -> None:
+        """单条 INSERT。**这是计量唯一的写路径**，必须保持 O(1)。
+
+        这里绝不碰任何聚合：写路径上一次 SUM 会让每轮对话的延迟随历史
+        记录线性增长，而「这条要不要记」的判断也不该在这里做（记了再说，
+        过滤是查的事）。
+        """
+        self.conn.execute(
+            "INSERT INTO llm_usage (created_at, provider, model, purpose, ok, degraded, error,"
+            " elapsed_ms, chunks, attempts, skipped, tokens_in, tokens_out, tokens_cached, estimated)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                _dt(record.created_at),
+                record.provider,
+                record.model,
+                record.purpose,
+                1 if record.ok else 0,
+                1 if record.degraded else 0,
+                record.error,
+                record.elapsed_ms,
+                record.chunks,
+                record.attempts,
+                _j(record.skipped),
+                record.tokens_in,
+                record.tokens_out,
+                record.tokens_cached,
+                1 if record.estimated else 0,
+            ),
+        )
+        self.conn.commit()
+
+    def usage_since(self, since: datetime) -> list[UsageRecord]:
+        """`since` 之后的明细。ISO 串按字典序就是时间序，所以能直接比较。
+
+        无时区的时间按 UTC 解释（`_dt` 写进去的全是 UTC）：
+        naive 与 aware 混比会静默漏行，那种 bug 只在大半夜复现。
+        """
+        rows = self.conn.execute(
+            "SELECT * FROM llm_usage WHERE created_at >= ? ORDER BY created_at ASC, id ASC",
+            (_dt(_as_utc(since)),),
+        ).fetchall()
+        return [_usage_from_row(r) for r in rows]
 
     # ---- 回溯 ---------------------------------------------------------- #
     def save_trace(self, trace: TraceRecord) -> None:

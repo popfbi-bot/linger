@@ -92,6 +92,13 @@ class Settings:
         default_factory=lambda: _env_int("LINGER_VOICE_MAX_AUDIO_BYTES", 8 * 1024 * 1024)
     )
 
+    # 成本看板（M4-D）的单价覆盖表。JSON 字符串，键是 `provider:model`（或单写 `model`），
+    # 值是 `{"input": 每千 token 美元, "output": ...}`。**合并**到内置快照上，
+    # 不是替换——只想改一个模型的价，不该顺手把别的全清空。
+    # 名字叫 PRICES 而不是 COST_PRICES：环境变量里 `LINGER_COST_*` 留给
+    # 「看板开关」这类将来的东西，价格本身只需要一个入口。
+    prices: str = field(default_factory=lambda: _env("LINGER_PRICES"))
+
     # 账号（M3-H）。令牌的自签密钥。
     #
     # 不配也能跑（默认随机生成一个进程内密钥），但要付出代价：进程一重启，

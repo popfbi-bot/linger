@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from ..accounts.models import Account
@@ -24,6 +24,7 @@ from ..models import (
     Session,
     TraceRecord,
     Turn,
+    UsageRecord,
 )
 
 
@@ -316,6 +317,24 @@ class Repository(ABC):
     @abstractmethod
     def drop_install(self, listing_id: str, user_id: str) -> None:
         """删掉安装关系（副本被用户删了之后重装要用）。不删副本本身。"""
+
+    # ---- LLM 用量（M4-D） ---------------------------------------------- #
+    @abstractmethod
+    def record_usage(self, record: UsageRecord) -> None:
+        """写一条用量记录。**单条 INSERT，不做任何聚合**（判据 5）。
+
+        失败调用（`ok=False`）走的是同一个方法、同一张表：只统计成功的调用，
+        重试风暴在看板上就完全隐形了——而重试风暴正是烧钱的主因。
+        """
+
+    @abstractmethod
+    def usage_since(self, since: datetime) -> list[UsageRecord]:
+        """取 `since` 之后（含）的全部用量记录，按时间升序。
+
+        返回**明细**而不是聚合结果：怎么分组是看板的决定（按 provider、
+        按天、按用途……），存储层替它选一种反而把口径钉死了。
+        数据量这里是「调用次数」的量级，不是 turn 的量级。
+        """
 
     # ---- 回溯 ---------------------------------------------------------- #
     @abstractmethod

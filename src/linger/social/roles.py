@@ -19,12 +19,38 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
-_DATA_DIR = Path(__file__).resolve().parent / "data"
+# 语料目录。默认是包内 data/；`LINGER_SOCIAL_DATA_DIR` 可覆盖。
+#
+# 为什么允许覆盖：语料文件名是中文，而有些文件系统/兼容层（含 Windows 上
+# 某些 ZIP 解压工具、以及 Wine 这类兼容层）会把非 ASCII 文件名写坏/读坏。
+# 那种环境下「换一个目录放同一批文件」是唯一可行的解法，不该逼人去改文件名
+# ——文件名在 `_CORPORA` 里带语义（极性、阶段），改了就是改数据含义。
+_DATA_DIR = Path(
+    os.environ.get("LINGER_SOCIAL_DATA_DIR") or Path(__file__).resolve().parent / "data"
+)
 _CORPUS_FILE = "亲密陪伴关系中的人格身份全录.md"
+
+# 逻辑文件名 → 磁盘文件名。与 `knowledge._NAME_MAP` 同源（同一个环境变量），
+# 理由见那里的注释：中文文件名在某些环境里根本写不出来。
+_NAME_MAP: dict[str, str] = {}
+
+
+def _disk_name(filename: str) -> str:
+    if not _NAME_MAP:
+        raw = os.environ.get("LINGER_SOCIAL_NAME_MAP") or ""
+        if raw.strip():
+            try:
+                parsed = __import__("json").loads(raw)
+            except __import__("json").JSONDecodeError:
+                parsed = {}
+            if isinstance(parsed, dict):
+                _NAME_MAP.update({str(k): str(v) for k, v in parsed.items()})
+    return _NAME_MAP.get(filename, filename)
 
 # 语料里的维度章节标题 → 规范名
 # 序号（一、二、…）在 _clean_title 里被剥掉，这里用「剥完后以『、』开头」之前的正文匹配。
@@ -74,7 +100,7 @@ class RelationRoleKnowledge:
         self.roles: list[RelationRole] = []
         self._by_dimension: dict[str, list[RelationRole]] = {}
         self._by_name: dict[str, RelationRole] = {}
-        self._load(data_dir / _CORPUS_FILE)
+        self._load(data_dir / _disk_name(_CORPUS_FILE))
 
     # ------------------------------------------------------------------ #
     def _load(self, path: Path) -> None:

@@ -22,11 +22,46 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-_DATA_DIR = Path(__file__).resolve().parent / "data"
+# 语料目录。默认是包内 data/；`LINGER_SOCIAL_DATA_DIR` 可覆盖。
+#
+# 为什么允许覆盖：语料文件名是中文，而有些文件系统/兼容层（含 Windows 上
+# 某些 ZIP 解压工具、以及 Wine 这类兼容层）会把非 ASCII 文件名写坏/读坏。
+# 那种环境下「换一个目录放同一批文件」是唯一可行的解法，不该逼人去改文件名
+# ——文件名在 `_CORPORA` 里带语义（极性、阶段），改了就是改数据含义。
+_DATA_DIR = Path(
+    os.environ.get("LINGER_SOCIAL_DATA_DIR") or Path(__file__).resolve().parent / "data"
+)
+
+# 逻辑文件名 → 磁盘文件名。默认恒等；某些环境（解压工具、兼容层）写不出中文
+# 文件名时，用 `LINGER_SOCIAL_NAME_MAP` 给一份对照（JSON：{"中文名.md": "a.md"}），
+# 代码里的 `_CORPORA` 一个字都不用改——那些中文名带语义（极性、阶段）。
+_NAME_MAP: dict[str, str] = {}
+
+
+def _load_name_map() -> None:
+    raw = os.environ.get("LINGER_SOCIAL_NAME_MAP") or ""
+    if not raw.strip():
+        return
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return
+    if isinstance(parsed, dict):
+        _NAME_MAP.update({str(k): str(v) for k, v in parsed.items()})
+
+
+_load_name_map()
+
+
+def corpus_path(filename: str) -> Path:
+    """逻辑文件名 → 磁盘上的语料路径（走 `_DATA_DIR` 与 `_NAME_MAP`）。"""
+    return _DATA_DIR / _NAME_MAP.get(filename, filename)
 
 # 语料 → 极性 / 阶段 / 文件名
 _CORPORA: list[tuple[str, str, str]] = [
@@ -98,7 +133,7 @@ class SocialKnowledge:
     # ------------------------------------------------------------------ #
     def _load_all(self, data_dir: Path) -> None:
         for filename, polarity, stage in _CORPORA:
-            path = data_dir / filename
+            path = data_dir / _NAME_MAP.get(filename, filename)
             if not path.exists():
                 continue
             section = ""

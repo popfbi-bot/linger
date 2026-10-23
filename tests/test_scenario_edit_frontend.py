@@ -13,7 +13,11 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 STATIC = Path(__file__).resolve().parent.parent / "src" / "linger" / "server" / "static"
 JS = (STATIC / "app.js").read_text(encoding="utf-8")
@@ -103,8 +107,6 @@ def test_beat_roundtrip():
     用 Node 跑真函数（锚点切出来拼最小环境），不 grep 文本——
     grep 证明不了「往返一致」这种行为判据。
     """
-    import subprocess
-
     a = _fn("beatToLine")
     b = _fn("lineToBeat")
     script = f"{a}\n{b}\n"
@@ -128,7 +130,13 @@ const twice = beatToLine(lineToBeat(line2));
 if (twice !== line2) { console.error("行→拍→行 不幂等", line2, twice); process.exit(1); }
 console.log("roundtrip-ok");
 """
-    r = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    # 用 which 找到的绝对路径，不写裸 `"node"`：Windows 上 `CreateProcess`
+    # 不会做 PATH 搜索里的 PATHEXT 展开，裸名会直接 FileNotFoundError——
+    # 那样这条判据在 Windows 上永远是「环境问题」，而不是在验代码。
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("需要 node 跑真实前端脚本")
+    r = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, f"往返不一致：{r.stderr or r.stdout}"
 
 

@@ -183,3 +183,27 @@ CREATE TABLE IF NOT EXISTS market_install (
   installed_at TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (listing_id, user_id)
 );
+
+-- LLM 用量流水（M4-D）。与 SQLite 版同构：无数外键、无 persona/user 维度。
+-- 用途是「这段进程花了多少钱」，不是「谁花的钱」——按用户分摊需要一套计费模型，
+-- 明确超出 #36 的范围。
+-- BIGSERIAL 与 turn 一致：它是流水，只会一直涨。
+CREATE TABLE IF NOT EXISTS llm_usage (
+  id            BIGSERIAL PRIMARY KEY,
+  created_at    TIMESTAMPTZ NOT NULL,
+  provider      TEXT NOT NULL,
+  model         TEXT NOT NULL,
+  purpose       TEXT NOT NULL DEFAULT 'chat',
+  ok            BOOLEAN NOT NULL DEFAULT TRUE,
+  degraded      BOOLEAN NOT NULL DEFAULT FALSE,
+  error         TEXT,
+  elapsed_ms    INTEGER NOT NULL DEFAULT 0,
+  chunks        INTEGER NOT NULL DEFAULT 0,
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  skipped       JSONB,
+  tokens_in     INTEGER,
+  tokens_out    INTEGER,
+  tokens_cached INTEGER NOT NULL DEFAULT 0,
+  estimated     BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE INDEX IF NOT EXISTS idx_usage_created ON llm_usage (created_at);

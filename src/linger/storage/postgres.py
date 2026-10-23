@@ -44,6 +44,7 @@ from ..models import (
     Session,
     TraceRecord,
     Turn,
+    UsageRecord,
 )
 from .base import Repository
 
@@ -691,6 +692,64 @@ class PostgresRepository(Repository):
             (persona_id,),
         )
         return [r["user_id"] for r in rows]
+
+    # ---- LLM 用量（M4-D） ---------------------------------------------- #
+    def record_usage(self, record: UsageRecord) -> None:
+        """单条 INSERT，不加 RETURNING、不做聚合（判据 5）。
+
+        `skipped` 落 JSONB：它是 list[str]，PG 数组适配会做类型推断，
+        显式 `_jd` 保证「这里就是要存 JSON」在代码里看得见。
+        """
+        self._run(
+            "INSERT INTO llm_usage (created_at, provider, model, purpose, ok, degraded, error,"
+            " elapsed_ms, chunks, attempts, skipped, tokens_in, tokens_out, tokens_cached, estimated)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                _aware(record.created_at),
+                record.provider,
+                record.model,
+                record.purpose,
+                record.ok,
+                record.degraded,
+                record.error,
+                record.elapsed_ms,
+                record.chunks,
+                record.attempts,
+                _jd(record.skipped),
+                record.tokens_in,
+                record.tokens_out,
+                record.tokens_cached,
+                record.estimated,
+            ),
+        )
+
+    def usage_since(self, since: datetime) -> list[UsageRecord]:
+        """`since` 之后的明细，时间升序。naive 时间按 UTC 解释（同 `_aware`）。"""
+        rows = self._run(
+            "SELECT * FROM llm_usage WHERE created_at >= %s ORDER BY created_at ASC, id ASC",
+            (_aware(since),),
+        )
+        return [
+            UsageRecord(
+                id=int(r["id"]),
+                created_at=r["created_at"],
+                provider=r["provider"],
+                model=r["model"],
+                purpose=r["purpose"],
+                ok=bool(r["ok"]),
+                degraded=bool(r["degraded"]),
+                error=r["error"],
+                elapsed_ms=int(r["elapsed_ms"] or 0),
+                chunks=int(r["chunks"] or 0),
+                attempts=int(r["attempts"] or 0),
+                skipped=list(r["skipped"] or []),
+                tokens_in=r["tokens_in"],
+                tokens_out=r["tokens_out"],
+                tokens_cached=int(r["tokens_cached"] or 0),
+                estimated=bool(r["estimated"]),
+            )
+            for r in rows
+        ]
 
     # ---- 回溯 ---------------------------------------------------------- #
     def save_trace(self, trace: TraceRecord) -> None:

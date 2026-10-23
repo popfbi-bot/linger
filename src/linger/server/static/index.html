@@ -470,6 +470,33 @@
       </div>
     </section>
 
+    <!-- M4-D：成本看板。放在最下面——它回答的是「这段时间花了多少」，
+         不是「这一轮怎么回应你的」，读它的时机本来就在聊完之后。
+         数字全部来自 GET /v1/costs：前端不做任何算术，因为「成本怎么算」
+         只能有一个口径，那个口径在后端。 -->
+    <section class="card" id="cost-card">
+      <h2>成本 <span class="cost-window" id="cost-window">近 7 日</span></h2>
+      <p class="hint">模型的用量与估算花费。单价是快照，不是账单。</p>
+      <div class="cost-summary">
+        <div class="cost-kpi">
+          <span class="cost-kpi-label">今日 token</span>
+          <span class="cost-kpi-value" id="cost-today-tokens">—</span>
+        </div>
+        <div class="cost-kpi">
+          <span class="cost-kpi-label">近 7 日失败率</span>
+          <span class="cost-kpi-value" id="cost-week-failure">—</span>
+        </div>
+        <div class="cost-kpi">
+          <span class="cost-kpi-label">近 7 日花费</span>
+          <span class="cost-kpi-value" id="cost-week-cost">—</span>
+        </div>
+      </div>
+      <div id="cost-providers" class="cost-providers">
+        <p class="muted small">还没有调用记录。</p>
+      </div>
+      <p class="cost-hint muted small" id="cost-hint"></p>
+    </section>
+
     <section class="card">
       <h2>这一轮发生了什么</h2>
       <div id="trace-panel" class="trace-panel">

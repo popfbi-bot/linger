@@ -51,6 +51,9 @@
     chunks: [],         // 录音分片
     recording: false,
     audio: null,        // 当前在播的 Audio 元素（同一时刻只播一条）
+    // 成本（M4-D）。存的是 `/v1/costs` 的**原始响应**，渲染时不再加工数字：
+    // 成本怎么算只能有一个口径，那个口径在后端（`cost/pricing.py`）。
+    costs: null,
   };
 
   /** 本机用户标识：localStorage 持久化。
@@ -181,6 +184,13 @@
     memoryList: $("memory-list"),
     memoryCount: $("memory-count"),
     tracePanel: $("trace-panel"),
+    // 成本看板（M4-D）。三块 KPI + 一行 provider 明细 + 一行脚注。
+    costTodayTokens: $("cost-today-tokens"),
+    costWeekFailure: $("cost-week-failure"),
+    costWeekCost: $("cost-week-cost"),
+    costProviders: $("cost-providers"),
+    costHint: $("cost-hint"),
+    costWindow: $("cost-window"),
     thinkingStrip: $("thinking-strip"),
     thinkingText: $("thinking-text"),
     companionEmpty: $("companion-empty"),
@@ -893,6 +903,110 @@
   }
 
   el.btnWriteDiary.addEventListener("click", writeDiary);
+
+  // ────────────────────────── 成本看板（M4-D） ──────────────────────────
+
+  /** 成本面板要渲染的全部数字，都来自 `/v1/costs` 的响应。
+   *
+   * 这里**故意不做除法**：失败率、token 合计都是后端算好的。前端每多算一次，
+   * 就是多一个「看板和接口对不上」的机会，而那种 bug 最难判谁对。
+   *
+   * 唯一的判断是「是不是 null」，因为 null 与 0 在这块面板上是两件事：
+   *   null → 「未知」：我们不知道它花了多少（单价不在表里 / 没有调用）
+   *   0    → 「$0」：真的没花钱（本地模型，写明的 0 价）
+   * 把「不知道」渲染成 0，就是告诉用户「很省钱」——那是比空白更糟的谎言。
+   */
+  const COST_UNKNOWN = "未知";
+
+  function fmtTokens(v) {
+    if (v === null || v === undefined) return COST_UNKNOWN;
+    const n = Number(v);
+    if (!isFinite(n)) return COST_UNKNOWN;
+    if (n >= 10000) return (n / 1000).toFixed(1) + "k";
+    return String(n);
+  }
+
+  function fmtCost(v) {
+    if (v === null || v === undefined) return COST_UNKNOWN;
+    const n = Number(v);
+    if (!isFinite(n)) return COST_UNKNOWN;
+    // 小额也要显示得出来：0.000123 用 toFixed(2) 会变成 $0.00，
+    // 那正好是「看起来免费」，正是要避免的那种读法。
+    if (n === 0) return "$0";
+    if (n < 0.01) return "$" + n.toFixed(6).replace(/0+$/, "");
+    return "$" + n.toFixed(2);
+  }
+
+  function fmtRate(v) {
+    if (v === null || v === undefined) return COST_UNKNOWN;
+    const n = Number(v);
+    if (!isFinite(n)) return COST_UNKNOWN;
+    return (n * 100).toFixed(1) + "%";
+  }
+
+  function renderCosts() {
+    const data = state.costs;
+    if (!data) {
+      if (el.costTodayTokens) el.costTodayTokens.textContent = COST_UNKNOWN;
+      return;
+    }
+    const today = data.today || {};
+    const week = data.last_7_days || {};
+    const totals = data.totals || {};
+
+    el.costTodayTokens.textContent = fmtTokens(today.tokens_total);
+    el.costWeekFailure.textContent = fmtRate(week.failure_rate);
+    el.costWeekCost.textContent = fmtCost(week.cost);
+    if (el.costWindow) {
+      const days = (data.window && data.window.days) || 7;
+      el.costWindow.textContent = "近 " + days + " 日";
+    }
+
+    const providers = data.by_provider || [];
+    if (!providers.length) {
+      el.costProviders.innerHTML =
+        '<p class="muted small">这段时间还没有调用记录。</p>';
+    } else {
+      el.costProviders.innerHTML = "";
+      for (const p of providers) {
+        const row = document.createElement("div");
+        row.className = "cost-provider-row";
+        row.dataset.provider = String(p.provider || "");
+        // 每一次调用都要能看到「成功几次、失败几次」：只显示成功数，
+        // 重试风暴在面板上就完全隐形了。
+        // 用 textContent 而不是 innerHTML：这里每一段都是**文本**，
+        // 拼 HTML 只会白白多出一条 XSS 通道（见上面的 escapeHtml 讨论）。
+        row.textContent =
+          String(p.provider || "") + " · " +
+          String(p.calls) + " 次 · " +
+          fmtTokens(p.tokens_total) + " tok · 失败 " +
+          String(p.failed) + " · " + fmtCost(p.cost);
+        el.costProviders.appendChild(row);
+      }
+    }
+
+    // 脚注说清两件事：这钱是怎么算的（单价快照），以及有没有算不出来的。
+    const unknown = (totals.unknown_models || []).map((m) => m.provider + ":" + m.model);
+    const bits = [];
+    if (data.pricing_snapshot) bits.push("单价快照 " + data.pricing_snapshot);
+    if (unknown.length) bits.push("单价未知：" + unknown.join("、") + "（显示为「" + COST_UNKNOWN + "」）");
+    if (totals.calls) bits.push("共 " + totals.calls + " 次调用");
+    el.costHint.textContent = bits.join(" · ");
+  }
+
+  async function loadCosts() {
+    try {
+      const data = await api("/v1/costs?days=7");
+      state.costs = data;
+      renderCosts();
+    } catch (err) {
+      // 看板挂了不该影响聊天：只在面板里说一句，别的地方一个字不动。
+      if (el.costProviders) {
+        el.costProviders.innerHTML =
+          '<p class="muted small">成本取不到：' + escapeHtml(err.message || String(err)) + "</p>";
+      }
+    }
+  }
 
   // ───────────────────────────── trace 面板 ─────────────────────────────
 
@@ -2891,6 +3005,10 @@
     playMessage,
     attachPlayButton,
     canRecord,
+    // 成本看板（M4-D）。判据 6 只能断到「面板真的渲染出了 /v1/costs 响应里的数字」——
+    // grep 证明不了这一点，所以这两个入口要能被 harness 调到。
+    loadCosts,
+    renderCosts,
   };
 
   restoreAccount().finally(() => {
@@ -2900,6 +3018,7 @@
     // 市场与上面三块互不依赖：失败了只影响市场面板，聊天照旧。
     loadMarket();
     loadMarketMine();
+    loadCosts();
   });
 
   // 页面打开时顺手探一下服务是否活着
