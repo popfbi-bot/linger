@@ -1611,28 +1611,103 @@
       el.scenarioList.appendChild(noneBtn);
 
       for (const s of scenarios) {
-        const btn = document.createElement("button");
-        btn.className = "scenario-item";
-        btn.type = "button";
-        btn.dataset.scenarioId = s.id;
-        btn.innerHTML =
-          `<div class="scenario-title"><span>${escapeHtml(s.title || s.id)}</span>` +
-          `<span class="scenario-beats">${s.beat_count ?? "?"} 节拍</span></div>` +
-          `<div class="scenario-setting">${escapeHtml(s.setting || "")}</div>`;
-
-        btn.addEventListener("click", async () => {
-          state.scenarioId = s.id;
-          highlight(el.scenarioList, btn);
-          await cacheBeats(s.id);
-          if (state.templateId) startSession();
-          else showSceneProgress(null);
-        });
-        el.scenarioList.appendChild(btn);
+        el.scenarioList.appendChild(scenarioItemNode(s));
       }
     } catch (err) {
       el.scenarioList.innerHTML =
         `<p class="memory-empty">场景加载失败：${escapeHtml(err.message)}</p>`;
     }
+  }
+
+  // ──────────────────── 场景卡片（M3-G：编辑入口只给用户场景） ────────────────────
+
+  function scenarioItemNode(s) {
+    const btn = document.createElement("button");
+    btn.className = "scenario-item";
+    btn.type = "button";
+    btn.dataset.scenarioId = s.id;
+    btn.innerHTML =
+      `<div class="scenario-title"><span>${escapeHtml(s.title || s.id)}</span>` +
+      `<span class="scenario-beats">${s.beat_count ?? "?"} 节拍</span></div>` +
+      `<div class="scenario-setting">${escapeHtml(s.setting || "")}</div>`;
+
+    btn.addEventListener("click", async () => {
+      state.scenarioId = s.id;
+      highlight(el.scenarioList, btn);
+      await cacheBeats(s.id);
+      if (state.templateId) startSession();
+      else showSceneProgress(null);
+    });
+
+    // 编辑入口只给用户场景。内置场景是产品资产，改它走源码，
+    // 运行时覆盖会被 409（后端拦）——前端不给入口，双保险。
+    if (s.source === "user") {
+      const edit = document.createElement("span");
+      edit.className = "scenario-edit";
+      edit.textContent = "编辑";
+      edit.title = "编辑这个场景";
+      edit.addEventListener("click", (e) => {
+        e.stopPropagation(); // 别触发选中
+        enterScenarioEdit(s.id);
+      });
+      btn.querySelector(".scenario-title").appendChild(edit);
+    }
+    return btn;
+  }
+
+  let editingScenarioId = null; // null = 新建模式
+
+  async function enterScenarioEdit(id) {
+    let detail;
+    try {
+      detail = await api(`/v1/scenarios/${encodeURIComponent(id)}`);
+    } catch (err) {
+      showScHint("读取场景失败：" + err.message);
+      return;
+    }
+    if (detail.source !== "user") {
+      showScHint("内置场景不能在这里编辑。");
+      return;
+    }
+    editingScenarioId = id;
+    el.scenarioCreatePanel.hidden = false;
+    el.btnShowScenarioCreate.textContent = "− 收起";
+    el.scTitle.value = detail.title || "";
+    el.scId.value = detail.id || "";
+    el.scId.readOnly = true; // 编辑不改 id——改了会让已开会话的进度对不上
+    el.scSetting.value = detail.setting || "";
+    el.scRole.value = detail.user_role || "";
+    el.scOpening.value = detail.opening_narration || "";
+    el.scBeats.value = (detail.beats || []).map(beatToLine).join("\n");
+    el.btnCreateScenario.textContent = "保存修改";
+    el.scTitle.focus();
+    showScHint(`正在编辑「${detail.title}」。改完点「保存修改」。`);
+  }
+
+  function exitScenarioEdit() {
+    editingScenarioId = null;
+    el.scId.readOnly = false;
+    el.btnCreateScenario.textContent = "创建场景";
+  }
+
+  function beatToLine(b) {
+    // 与 lineToBeat 对偶：表单一行 ↔ 节拍一个
+    const goal = (b && b.goal) || "";
+    const trig = (b && b.trigger || []).join("、");
+    return trig ? `${goal}｜${trig}` : goal;
+  }
+
+  function lineToBeat(line) {
+    // 表单一行 → 节拍：支持「目标｜触发词1、触发词2」（｜或|分隔，全半角都认）。
+    // 没有触发词就只给 goal——后端 _normalize 会补空 trigger（空触发不自动推进，
+    // 比"猜一个触发词"诚实，见 writer.py 的注释）。
+    const s = String(line || "").trim();
+    if (!s) return null;
+    const sep = s.indexOf("｜") >= 0 ? "｜" : s.indexOf("|") >= 0 ? "|" : null;
+    if (sep === null) return { goal: s, trigger: [] };
+    const goal = s.slice(0, s.indexOf(sep)).trim();
+    const trigger = s.slice(s.indexOf(sep) + 1).split(/[、,，]/).map((t) => t.trim()).filter(Boolean);
+    return goal ? { goal, trigger } : null;
   }
 
   // ──────────────────── 自建场景（M3-F） ────────────────────
@@ -1666,19 +1741,23 @@
     const beats = el.scBeats.value
       .split("\n")
       .map((s) => s.trim())
+      .map((line) => lineToBeat(line))
       .filter(Boolean);
 
     const body = {
-      id: el.scId.value.trim() || autoScenarioId(),
+      id: editingScenarioId || el.scId.value.trim() || autoScenarioId(),
       title,
       setting: el.scSetting.value.trim(),
       opening_narration: el.scOpening.value.trim(),
       user_role: el.scRole.value.trim(),
       beats,
     };
+    // 编辑模式：带 overwrite。id 沿用原值（enterScenarioEdit 里已锁只读），
+    // 已开会话的进度靠 id 对得上——改 id 就等于断了进度。
+    if (editingScenarioId) body.overwrite = true;
 
     el.btnCreateScenario.disabled = true;
-    setScHint("正在创建…");
+    setScHint(editingScenarioId ? "正在保存…" : "正在创建…");
     try {
       const created = await api("/v1/scenarios", {
         method: "POST",
@@ -1690,16 +1769,23 @@
       for (const node of [el.scTitle, el.scId, el.scSetting, el.scOpening, el.scRole, el.scBeats]) {
         node.value = "";
       }
+      exitScenarioEdit();
       await loadScenarios();
-      setScHint(`已创建「${created.title}」`);
+      setScHint(editingScenarioId ? `已保存「${created.title}」` : `已创建「${created.title}」`);
+      editingScenarioId = null;
     } catch (err) {
-      // 409 是「代号撞了」，提示改成换个代号比原样抛错误码有用
+      // 409 是「代号撞了」：编辑态与新建态的提示分开——
+      // 编辑态撞 409 只可能是撞了内置（自己的场景本来就该 overwrite 过）
       const msg = String(err.message || err);
-      setScHint(
-        msg.startsWith("409")
-          ? "这个代号已被占用，换一个（或者把代号留空自动生成）。"
-          : "创建失败：" + msg
-      );
+      if (editingScenarioId) {
+        setScHint("保存失败：" + msg);
+      } else {
+        setScHint(
+          msg.startsWith("409")
+            ? "这个代号已被占用，换一个（或者把代号留空自动生成）。"
+            : "创建失败：" + msg
+        );
+      }
     } finally {
       el.btnCreateScenario.disabled = false;
     }

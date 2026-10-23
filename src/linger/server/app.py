@@ -441,6 +441,22 @@ def _scenario_detail(scenario) -> dict[str, Any]:
     }
 
 
+def _scenario_source(scenario_id: str) -> str:
+    """场景来源（user / builtin）。详情里带出来，前端据此决定给不给编辑入口。
+
+    找不到文件（理论不该发生，load 已成功）时保守返回 builtin——
+    宁可少给编辑入口，不能错给。
+    """
+    from ..scenario.loader import _source_of
+    from ..scenario.writer import builtin_scenario_dir, user_scenario_dir
+
+    for base in (user_scenario_dir(), builtin_scenario_dir()):
+        p = base / f"{scenario_id}.yaml"
+        if p.exists():
+            return _source_of(p)
+    return "builtin"
+
+
 def _session_scenario_state(repo: Repository, session) -> dict[str, Any]:
     """会话的场景进度摘要（GET /v1/sessions/{id} 与创建响应共用）。
 
@@ -666,9 +682,12 @@ def create_app(
         from ..scenario import load_scenario
 
         try:
-            return _scenario_detail(load_scenario(scenario_id))
+            detail = _scenario_detail(load_scenario(scenario_id))
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"场景不存在: {scenario_id}") from exc
+        # 编辑前预填表单要用：前端只对 source=user 的场景给「编辑」入口
+        detail["source"] = _scenario_source(scenario_id)
+        return detail
 
     @app.post("/v1/scenarios", status_code=201)
     def create_scenario_endpoint(body: CreateScenarioRequest) -> dict[str, Any]:

@@ -141,6 +141,12 @@ def save_scenario(payload: dict[str, Any], *, overwrite: bool = False) -> Path:
     """校验并写入用户场景目录，返回文件路径。
 
     `overwrite=False` 时同 id 已存在 → ScenarioExistsError（HTTP 409）。
+
+    内置场景拦截（M3-G）：写入的 id 撞**内置**场景、且用户目录里还没有这个文件
+    → ScenarioExistsError（HTTP 409）。
+    只拦「写下去会**新造**影子」这一步——用户目录里已有同名文件的
+    （历史遗留 / 手工放的），它就是用户的场景，照改不误，
+    否则用户永远改不动自己那个场景。
     """
     data = _normalize(payload)
 
@@ -152,6 +158,16 @@ def save_scenario(payload: dict[str, Any], *, overwrite: bool = False) -> Path:
 
     target_dir = user_scenario_dir()
     path = target_dir / f"{data['id']}.yaml"
+
+    if not path.exists():
+        builtin = builtin_scenario_dir() / f"{data['id']}.yaml"
+        if builtin.exists():
+            # 会新造一个「影子覆盖内置」的文件 → 拒绝。
+            # 内置场景是产品资产：改它的正确方式是改源码里的 yaml，不是运行时覆盖。
+            raise ScenarioExistsError(
+                f"{data['id']} 是内置场景，不能覆盖。想改它请改"
+                f" src/linger/templates/scenarios/{data['id']}.yaml 后重新打包"
+            )
 
     if path.exists() and not overwrite:
         raise ScenarioExistsError(f"场景已存在：{data['id']}")

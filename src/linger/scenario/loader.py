@@ -28,6 +28,20 @@ def _paths() -> list[Path]:
     return out
 
 
+def _source_of(path: Path) -> str:
+    """按**文件实际所在目录**判来源，不按 id 猜。
+
+    为什么不按 id：loader 本来就支持「yaml 里的 id 与文件名不一致」，
+    按 id 猜会猜错。文件躺在用户目录里，它就是用户的——哪怕 id 撞了内置场景
+    （手工放的影子文件，读取机制保留，见 test_手工影子仍生效）。
+    """
+    try:
+        path.relative_to(user_scenario_dir())
+        return "user"
+    except ValueError:
+        return "builtin"
+
+
 def _brief(path: Path, data: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": data.get("id") or path.stem,
@@ -35,6 +49,7 @@ def _brief(path: Path, data: dict[str, Any]) -> dict[str, Any]:
         "setting": data.get("setting", ""),
         "user_role": data.get("user_role", ""),
         "beat_count": len(data.get("beats") or []),
+        "source": _source_of(path),
     }
 
 
