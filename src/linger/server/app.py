@@ -35,7 +35,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -56,6 +56,8 @@ from ..diary import DiaryGenerateError, generate_diary
 from ..distill import PersonaDistillError, TranscriptError, distill_persona, parse_transcript
 from ..llm import ResilientProvider, get_provider
 from ..llm.base import LLMRuntimeError
+from ..market import service as market_service
+from ..market.service import MarketError
 from ..memory.embedding import get_embedder
 from ..models import CompanionProfile, DiaryEntry, MemoryEditRecord, PersonaCard, new_id, now_utc
 from ..orchestrator import Orchestrator
@@ -342,6 +344,21 @@ class UpdateMemoryRequest(BaseModel):
         if len(v) > MEMORY_CONTENT_MAX:
             raise ValueError(f"content 超过 {MEMORY_CONTENT_MAX} 字上限（实际 {len(v)} 字）")
         return v
+
+
+class ListPersonaRequest(BaseModel):
+    """上架请求（判据 1）。`title` / `summary` 空则由服务端回落。"""
+
+    persona_id: str = Field(..., min_length=1, description="要上架的人格 id")
+    title: str = Field(default="", max_length=80)
+    summary: str = Field(default="", max_length=400)
+
+
+class ReviewListingRequest(BaseModel):
+    """审核请求（判据 5）。动作只允许 approve / reject，别的值在服务层被拒。"""
+
+    action: str = Field(..., description="approve 或 reject")
+    note: str = Field(default="", max_length=400)
 
 
 class RegisterRequest(BaseModel):
@@ -1519,6 +1536,234 @@ def create_app(
                 status_code=404, detail=f"这一天还没有日记: {persona_id}/{user_id}/{day}"
             )
         return {"entry": _diary_detail(entry)}
+
+    # ------------------------------------------------------------------ #
+    # 人格市场（M4-B）：上架 / 审核 / 分发
+    # ------------------------------------------------------------------ #
+    # 本组端点**全部要求登录**：市场是账号之间的动作，匿名 id 随时可以换一个，
+    # 用匿名 id 上架等于「谁都能声称自己是作者」。
+    # 注意这是对既有「未登录不弹登录墙」边界的唯一触碰点——只碰市场这一组。
+    def _market_http_error(exc: MarketError) -> HTTPException:
+        """MarketError.kind → 状态码。**只有这一处做这个翻译**。
+
+        `cloned_forbidden` 用 403（判据 2 建议值）：它不是「参数错了」，
+        是「这件事不允许」。文案直接取服务层的固定常量，不在这一层另写一份——
+        两份文案迟早会漂移，而测试逐字断言的是那一份。
+        """
+        status = {
+            "not_found": 404,
+            "not_owner": 403,
+            "cloned_forbidden": 403,
+            "forbidden": 403,
+            "self_review": 403,
+            "not_approved": 409,
+            "bad_state": 409,
+            "bad_action": 422,
+            "bad_snapshot": 422,
+        }.get(exc.kind, 400)
+        return HTTPException(status_code=status, detail=exc.message)
+
+    def _mask_user(user_id: str) -> str:
+        """公开列表里的作者 id 只留前 6 位+尾 2 位。
+
+        公开的是人格，不是账号——完整 user_id 可被拿去当「这个人在市场里"
+        的关联键，把一个人上架过的所有东西串起来。
+        """
+        if not user_id:
+            return ""
+        return user_id[:6] + "***" + user_id[-2:]
+
+    def _persona_brief(card: PersonaCard) -> dict[str, Any]:
+        return {
+            "id": card.id,
+            "name": card.name,
+            "identity": card.meta.identity,
+            "provenance_type": (card.provenance or {}).get("type", ""),
+        }
+
+    def _listing_detail(listing: Any) -> dict[str, Any]:
+        return {
+            **market_service.listing_brief(listing),
+            "persona_id": listing.persona_id,
+            "author_id": _mask_user(listing.author_id),
+            "status": listing.status,
+            "reviewed_at": listing.reviewed_at.isoformat() if listing.reviewed_at else None,
+            "reviewer_id": _mask_user(listing.reviewer_id),
+            "review_note": listing.review_note,
+        }
+
+    @app.post("/v1/market/listings")
+    def create_market_listing_endpoint(
+        body: ListPersonaRequest,
+        account: Account = Depends(require_actor),
+        repo: Repository = Depends(get_repo),
+    ) -> Any:
+        """上架本人名下一个的人格（判据 1）→ 201 `pending_review` + `listed_at`。
+
+        错误码：
+          · 403 `not_owner` —— 不是自己的人格（判据 3）
+          · 403 `cloned_forbidden` —— 蒸馏产物（判据 2，**红线**）
+          · 404 `not_found` —— 人格不存在或已删
+          · 409 `bad_state` —— 该人格已有待审/在架条目（重复上架走「复用」，见下）
+
+        「已有待审/在架条目」返回 **200 + 同一条 id**（`created: false`）：
+        重复点「上架」不该报错，但也不能留下两条负重。
+        """
+        try:
+            listing, created = market_service.create_listing(
+                repo,
+                user_id=account.user_id,
+                persona_id=body.persona_id,
+                title=body.title,
+                summary=body.summary,
+            )
+        except MarketError as exc:
+            raise _market_http_error(exc) from exc
+        # 首次 201，复用 200。状态码必须在**运行时**按 `created` 决定，
+        # 所以这里不写 `status_code=201`（那是写死的）。
+        return JSONResponse(
+            status_code=201 if created else 200,
+            content={**_listing_detail(listing), "created": created},
+        )
+
+    @app.get("/v1/market/listings")
+    def list_market_listings_endpoint(
+        limit: int = 50,
+        repo: Repository = Depends(get_repo),
+    ) -> dict[str, Any]:
+        """公共列表：**只返回 approved**（判据 4）。
+
+        `pending_review` / `rejected` 在这里一次都不出现——不是在调用方传参，
+        是 `public_listings()` 里写死了 `status=approved`。
+        作者看自己的全部条目走 `/v1/market/mine`。
+
+        这个端点**不要求登录**：逛市场不该先注册。但每个 `author_id` 一律脱敏。
+        """
+        listings = market_service.public_listings(repo, limit=limit)
+        return {
+            "count": len(listings),
+            "listings": [
+                {**market_service.listing_brief(item), "author_id": _mask_user(item.author_id)}
+                for item in listings
+            ],
+        }
+
+    @app.get("/v1/market/mine")
+    def my_market_listings_endpoint(
+        account: Account = Depends(require_actor),
+        repo: Repository = Depends(get_repo),
+    ) -> dict[str, Any]:
+        """作者自己的全部条目（任何状态）。判据 4 说的「那是另一个端点」就是这个。
+
+        为什么必须鉴权：它是按作者过滤的视图。让它接受 `?author_id=`
+        等于公开「某人上架了什么东西、被拒了几次」——审核侧诉说的是敏感的。
+        """
+        listings = market_service.own_listings(repo, account.user_id)
+        return {"count": len(listings), "listings": [_listing_detail(i) for i in listings]}
+
+    @app.get("/v1/market/listings/{listing_id}")
+    def get_market_listing_endpoint(
+        listing_id: str,
+        repo: Repository = Depends(get_repo),
+        account: Account | None = Depends(optional_actor),
+    ) -> dict[str, Any]:
+        """单条详情（含人格卡快照）。
+
+        可见性规则只有两条：
+          · `approved` —— 谁都能看（它就是叙述上的东西）
+          · 其它状态——**只有作者自己**能看，别人一律 404
+
+        为什么非 approved 对别人是 404 而不是 403：403 等于确认「这个 id 存在」，
+        那就把「谁送审了、被拒了」变成可探测的事实。
+        """
+        try:
+            listing = market_service.get_visible_listing(
+                repo, listing_id, viewer_id=account.user_id if account else None
+            )
+        except MarketError as exc:
+            raise _market_http_error(exc) from exc
+        return {
+            **_listing_detail(listing),
+            "persona": listing.snapshot,
+            "author_id": _mask_user(listing.author_id),
+        }
+
+    @app.post("/v1/market/listings/{listing_id}/review")
+    def review_market_listing_endpoint(
+        listing_id: str,
+        body: ReviewListingRequest,
+        account: Account = Depends(require_actor),
+        repo: Repository = Depends(get_repo),
+    ) -> dict[str, Any]:
+        """审核 `approve` / `reject`（判据 5）。
+
+        谁有审核权**由配置决定**（`LINGER_MARKET_REVIEWER_EMAILS`，逗号分隔），
+        且**作者不能审自己的条目**。两条 guard 都在 `market.service.review()` 里，
+        顺序是：动作合法 → 审核权 → 非本人 → 状态机。
+
+        重复审核 → 409（状态机不允许），不是幂等 200：
+        第二次 approve 也返回 200，前端就无法区分「我批了」和「早就批了」，
+        「谁在什么时刻批的」——多一条 200 就多一次假记录。
+        """
+        try:
+            listing = market_service.review(
+                repo,
+                reviewer_id=account.user_id,
+                reviewer_email=account.email,
+                reviewer_emails=market_service.reviewer_emails(),
+                listing_id=listing_id,
+                action=body.action,
+                note=body.note,
+            )
+        except MarketError as exc:
+            raise _market_http_error(exc) from exc
+        return {**_listing_detail(listing), "action": body.action}
+
+    @app.post("/v1/market/listings/{listing_id}/install")
+    def install_market_listing_endpoint(
+        listing_id: str,
+        account: Account = Depends(require_actor),
+        repo: Repository = Depends(get_repo),
+    ) -> Any:
+        """安装：在当前账号下拿到一份人格副本（判据 6）。
+
+        **幂等复用**：同一账号装同一条目只有一份副本，第二次 200 + 同 id +
+        `reused: true`。理由见 `market/service.py::install` 的 docstring。
+        状态码：首次 201，复用 200。两者都含 `persona`（副本的 brief）与
+        `provenance.origin`（拆清来源 listing），前缀步骤都来自市场。
+        """
+        try:
+            outcome = market_service.install(repo, user_id=account.user_id, listing_id=listing_id)
+        except MarketError as exc:
+            raise _market_http_error(exc) from exc
+        payload = {
+            "persona": _persona_brief(outcome.persona),
+            "provenance": outcome.persona.provenance,
+            "listing_id": outcome.listing_id,
+            "author_id": _mask_user(outcome.author_id),
+            "copied": outcome.copied,
+            "reused": not outcome.copied,
+        }
+        return JSONResponse(
+            status_code=201 if outcome.copied else 200, content=payload
+        )
+
+    @app.delete("/v1/market/listings/{listing_id}")
+    def unlist_market_listing_endpoint(
+        listing_id: str,
+        account: Account = Depends(require_actor),
+        repo: Repository = Depends(get_repo),
+    ) -> dict[str, Any]:
+        """下架自己的在架条目（判据 7）→ 状态 `unlisted`，公共列表里消失。
+
+        **已安装的人手里的副本不受影响**：下架只改 `market_listing.status`，
+        一行 persona / memory / session 都不碰。这条由「不写」保证。
+        """
+        try:
+            listing = market_service.unlist(repo, user_id=account.user_id, listing_id=listing_id)
+        except MarketError as exc:
+            raise _market_http_error(exc) from exc
+        return {"id": listing.id, "status": listing.status, "unlisted": True}
 
     # ------------------------------------------------------------------ #
     # trace 回溯

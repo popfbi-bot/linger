@@ -220,7 +220,7 @@ def test_schema_tables_match_sqlite() -> None:
     lite_tables = _tables(_SCHEMA)
     assert pg_tables - lite_tables == set(), f"PG 多出来的表：{sorted(pg_tables - lite_tables)}"
     assert lite_tables - pg_tables == set(), f"PG 缺的表：{sorted(lite_tables - pg_tables)}"
-    assert len(pg_tables) == 12, f"表数应是 12，实际 {len(pg_tables)}"
+    assert len(pg_tables) == 14, f"表数应是 14，实际 {len(pg_tables)}"
 
 
 def test_schema_has_no_placeholders_and_uses_timestamptz() -> None:
@@ -242,7 +242,8 @@ def test_diary_schema_keeps_daily_unique_key() -> None:
 def test_missing_table_is_detected() -> None:
     """判据 4 的变异：删掉一张表的建表语句，集合比对必须报出来。
 
-    M3-H 起表数是 12（多一张 account），这条断言随 schema 增长而更新——
+    M3-H 起表数是 12（多一张 account），M4-B 到 14（多 market_listing /
+    market_install）。这条断言随 schema 增长而更新——
     它的价值不在「数字是几」，而在「有人悄悄增删表时必须有人改这里」。
     """
     from linger.storage.sqlite import _SCHEMA
@@ -375,6 +376,10 @@ def pg_repo():
         pytest.skip("未设置 LINGER_TEST_PG_DSN，跳过真库集成测试")
     repo = PostgresRepository(dsn, pool_size=2)
     for table in (
+        # 市场两张表先清：market_install 记着「谁装过哪条」，
+        # 不清会让上一轮的安装记录串到下一轮（幂等查询直接命中脏行）。
+        "market_install",
+        "market_listing",
         "memory_edit_log",
         "diary_entry",
         "trace",
@@ -541,6 +546,61 @@ def test_pg_memory_edit_log(pg_repo) -> None:
     )
     edits = pg_repo.list_memory_edits("m_x")
     assert [e.new_content for e in edits] == ["新口径"]
+
+
+def test_pg_market_roundtrip(pg_repo) -> None:
+    """市场的两张表在真库上跑完整条状态机（判据 8 的 PG 侧证明）。
+
+    三件事只有真库能证：部分唯一索引真的拒第二条、条件更新真的按行数返回、
+    安装主键真的挡住重复安装。
+    """
+    from linger.market import service as market_service
+    from linger.market.models import STATUS_APPROVED, STATUS_PENDING, MarketListing
+    from linger.models import PersonaCard, PersonaMeta, now_utc
+
+    author = "u_pg_author"
+    card = PersonaCard(
+        id="p_pg_market",
+        meta=PersonaMeta(name="PG 市场"),
+        provenance={"type": "authored", "owner": author},
+    )
+    pg_repo.save_persona(card)
+
+    listing, created = market_service.create_listing(
+        pg_repo, user_id=author, persona_id=card.id, title="PG"
+    )
+    assert created and listing.status == STATUS_PENDING
+
+    # 同人格再建一条 → 撞部分唯一索引 → 返回已有那条，不是插出第二条
+    dup = pg_repo.create_listing(
+        MarketListing(
+            id="l_pg_dup",
+            persona_id=card.id,
+            author_id=author,
+            title="dup",
+            summary="",
+            snapshot=card.model_dump(mode="json"),
+            status=STATUS_PENDING,
+            listed_at=now_utc(),
+        )
+    )
+    assert dup.id == listing.id
+    assert len(pg_repo.list_listings()) == 1
+
+    # 条件更新：第二次必须 False
+    kw = dict(reviewer_id="u_pg_rv", note="", reviewed_at=now_utc())
+    assert pg_repo.review_listing(
+        listing.id, from_status=STATUS_PENDING, to_status=STATUS_APPROVED, **kw
+    )
+    assert not pg_repo.review_listing(
+        listing.id, from_status=STATUS_PENDING, to_status=STATUS_APPROVED, **kw
+    )
+
+    outcome = market_service.install(pg_repo, user_id="u_pg_fan", listing_id=listing.id)
+    assert outcome.copied is True
+    again = market_service.install(pg_repo, user_id="u_pg_fan", listing_id=listing.id)
+    assert again.copied is False and again.persona.id == outcome.persona.id
+    assert pg_repo.get_install(listing.id, "u_pg_fan").persona_id == outcome.persona.id
 
 
 def test_pg_close_is_idempotent(pg_repo) -> None:

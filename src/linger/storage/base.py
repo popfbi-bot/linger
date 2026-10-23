@@ -12,6 +12,7 @@ from datetime import date
 from typing import Any
 
 from ..accounts.models import Account
+from ..market.models import InstalledCopy, MarketListing
 from ..models import (
     AffectState,
     CompanionProfile,
@@ -255,6 +256,66 @@ class Repository(ABC):
         按 last_activity 倒序：参与排序的字段必须被索引（PG 侧会建），
         否则个人格下的全表扫会随日记增长变慢。
         """
+
+
+    # ---- 人格市场（M4-B） ---------------------------------------------- #
+    @abstractmethod
+    def create_listing(self, listing: MarketListing) -> MarketListing:
+        """新建一条上架记录，返回**落库的那一条**。
+
+        返回而不是 None：`create_listing()` 在「同一个人格已有待审/在架条目」时
+        要能把**已有**的那条还回去（判据 1 的「重复上架不报错、但也不留两条」）。
+        """
+
+    @abstractmethod
+    def get_listing(self, listing_id: str) -> MarketListing | None: ...
+
+    @abstractmethod
+    def list_listings(self, limit: int = 50) -> list[MarketListing]:
+        """全部条目，新的在前。**状态过滤由业务层做**（判据 4 的唯一实现点
+        在 `market.service.public_listings`），这里不提供 status 参数——
+        少一个「调用方记得传」的地方。"""
+
+    @abstractmethod
+    def find_live_listing(self, persona_id: str) -> MarketListing | None:
+        """这个人格当前**待审或在架**的那一条；没有返回 None。
+
+        「同一个 id 不能同时代表被拒的那一版和重交的下一版」——被拒/下架的
+        不进这个集合，所以它们可以再建一条新条目。
+        """
+
+    @abstractmethod
+    def review_listing(
+        self,
+        listing_id: str,
+        *,
+        from_status: str,
+        to_status: str,
+        reviewer_id: str,
+        note: str,
+        reviewed_at: Any,
+    ) -> bool:
+        """条件更新：`WHERE id=? AND status=from_status`。
+
+        返回 True = 本次真改了；False = 状态已不是 from_status（重复审核 / 并发后到者）。
+        用条件更新而不是先读后写：两个审核员同时点 approve 时，
+        后到者必须拿到 False，而不是覆盖前者的审核记录。
+        """
+
+    @abstractmethod
+    def save_install(self, record: InstalledCopy) -> bool:
+        """记一条安装关系。返回 False = 主键 `(listing_id, user_id)` 已存在。
+
+        并发窗口靠这个主键兜住，而不是靠调用方先查一次——
+        先查后写之间永远有一个窗口。
+        """
+
+    @abstractmethod
+    def get_install(self, listing_id: str, user_id: str) -> InstalledCopy | None: ...
+
+    @abstractmethod
+    def drop_install(self, listing_id: str, user_id: str) -> None:
+        """删掉安装关系（副本被用户删了之后重装要用）。不删副本本身。"""
 
     # ---- 回溯 ---------------------------------------------------------- #
     @abstractmethod
