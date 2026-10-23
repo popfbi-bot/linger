@@ -433,8 +433,15 @@
       </div>
       <form id="composer" class="composer">
         <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）" disabled></textarea>
+        <!-- 语音输入（M4-C）。按钮常驻但可禁用：浏览器不支持录音时它 disabled 且
+             `title` 说清原因——把功能藏起来比给个灰按钮更容易让人怀疑「是不是坏了」。
+             录音本身在浏览器里（MediaRecorder），服务端只吃字节，不碰音频设备。 -->
+        <button type="button" id="btn-mic" class="btn-ghost btn-mic" title="按住说话（点一下开始，再点一下结束）" disabled>
+          <span class="mic-icon" aria-hidden="true">●</span><span class="mic-label">按住说话</span>
+        </button>
         <button id="btn-send" class="btn-primary" disabled>发送</button>
       </form>
+      <div id="voice-status" class="voice-status" hidden></div>
     </div>
   </section>
 

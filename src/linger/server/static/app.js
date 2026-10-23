@@ -44,6 +44,13 @@
     // 人格摘要的缓存（含 owner / provenance）。上架按钮要靠 owner 判断归属，
     // 而卡片渲染时手上已经有整份摘要，不必再请求一次。
     personaCache: [],
+    // 语音（M4-C）。只在「这一页要不要给麦克风按钮」上有影响：
+    // 不支持录音的浏览器（http 局域网、老 Safari）按钮保持 disabled，
+    // 文字输入一行不动——语音是加出来的一层，不是替换。
+    recorder: null,     // MediaRecorder 实例
+    chunks: [],         // 录音分片
+    recording: false,
+    audio: null,        // 当前在播的 Audio 元素（同一时刻只播一条）
   };
 
   /** 本机用户标识：localStorage 持久化。
@@ -190,6 +197,8 @@
     diaryCount: $("diary-count"),
     btnWriteDiary: $("btn-write-diary"),
     diaryHint: $("diary-hint"),
+    btnMic: $("btn-mic"),
+    voiceStatus: $("voice-status"),
   };
 
   // ───────────────────────────── 小工具 ─────────────────────────────
@@ -475,6 +484,9 @@
     const bubble = document.createElement("div");
     bubble.className = "bubble";
     bubble.textContent = text;
+
+    // AI 的每一句都带「播放」入口；用户自己的话不需要（那是他自己说的）。
+    if (role !== "user") attachPlayButton(bubble, text);
 
     wrap.appendChild(bubble);
     el.messages.appendChild(wrap);
@@ -2422,6 +2434,7 @@
       '<p class="muted small">聊一句，这里会显示这一轮的召回与 token 分布。</p>';
     el.input.disabled = false;
     el.send.disabled = false;
+    el.btnMic.disabled = !canRecord();
     el.input.focus();
 
     setConn(`与${personaName}对话中`, "pill-live");
@@ -2565,8 +2578,188 @@
       el.thinkingStrip.hidden = true;
       el.input.disabled = false;
       el.send.disabled = false;
+      el.btnMic.disabled = !canRecord();
       el.input.focus();
     }
+  }
+
+  // ───────────────────────────── 语音（M4-C） ─────────────────────────────
+  // 三条边界写在这里，免得后面有人把它们当成「还没做完」：
+  //   1. 录音只在浏览器里做（MediaRecorder）。服务端只吃字节——
+  //      不引 pyaudio / sounddevice，那类依赖在 python:3.11-slim 里装不上。
+  //   2. 识别结果是**填进输入框**，不自动发送。人说话会打磕巴、会重来，
+  //      直接发出去等于替用户决定「这句就算数了」。
+  //   3. 播放是「每一句自己点」。不做自动朗读——那会盖掉用户正在读字的节奏，
+  //      而且一条长回复自动念出来是很吓人的体验。
+
+  /** 这个浏览器能不能录音。用能力探测而不是 UA 判断。 */
+  function canRecord() {
+    return typeof navigator !== "undefined"
+      && !!navigator.mediaDevices
+      && typeof navigator.mediaDevices.getUserMedia === "function"
+      && typeof MediaRecorder !== "undefined";
+  }
+
+  function setVoiceStatus(text, isError) {
+    if (!el.voiceStatus) return;
+    el.voiceStatus.textContent = text || "";
+    el.voiceStatus.hidden = !text;
+    el.voiceStatus.className = "voice-status" + (isError ? " is-error" : "");
+  }
+
+  /** 麦克风按钮上的字。取不到就静默跳过——标签只是装饰，缺它不该拖垮录音。 */
+  function setMicLabel(text) {
+    const label = el.btnMic && el.btnMic.querySelector ? el.btnMic.querySelector(".mic-label") : null;
+    if (label) label.textContent = text;
+  }
+
+  /** 麦克风点一下开始、再点一下结束。 */
+  async function toggleRecording() {
+    if (state.recording) {
+      stopRecording();
+      return;
+    }
+    if (!canRecord()) {
+      setVoiceStatus("这个浏览器不支持录音（需要 https 或 localhost）。打字一样可以。", true);
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      state.recorder = recorder;
+      state.chunks = [];
+      state.recording = true;
+      el.btnMic.classList.add("is-recording");
+      setMicLabel("停止");
+      setVoiceStatus("正在听… 说完点一下停止。", false);
+
+      recorder.addEventListener("dataavailable", (e) => {
+        if (e.data && e.data.size > 0) state.chunks.push(e.data);
+      });
+      recorder.addEventListener("stop", () => {
+        // 轨道必须显式停掉：不然浏览器的录音指示灯一直亮着——
+        // 用户会以为被偷听，这在陪伴类产品里是致命的信任问题。
+        for (const track of stream.getTracks()) track.stop();
+        uploadRecording(new Blob(state.chunks, { type: recorder.mimeType || "audio/webm" }));
+      });
+      recorder.start();
+    } catch (err) {
+      state.recording = false;
+      el.btnMic.classList.remove("is-recording");
+      setMicLabel("按住说话");
+      setVoiceStatus("拿不到麦克风权限：" + (err && err.message ? err.message : err), true);
+    }
+  }
+
+  function stopRecording() {
+    state.recording = false;
+    el.btnMic.classList.remove("is-recording");
+    setMicLabel("按住说话");
+    setVoiceStatus("识别中…", false);
+    try {
+      if (state.recorder && state.recorder.state !== "inactive") state.recorder.stop();
+    } catch (_) {
+      setVoiceStatus("录音器状态异常，请再试一次。", true);
+    }
+  }
+
+  /** 把录音送到 /v1/asr，结果填进输入框（不自动发送）。 */
+  async function uploadRecording(blob) {
+    if (!blob || blob.size === 0) {
+      setVoiceStatus("没有录到声音，再试一次？", true);
+      return;
+    }
+    const form = new FormData();
+    // 文件名只是给服务端日志看的，扩展名跟着浏览器实际给的 mime 走
+    const ext = (blob.type || "audio/webm").indexOf("ogg") !== -1 ? "ogg" : "webm";
+    form.append("audio", blob, "voice." + ext);
+    try {
+      // 不复用 api()：它固定写 Content-Type: application/json，
+      // 而 multipart 的 boundary 必须由浏览器自己生成。
+      // 也不在这里写 FormData 检测或守卫——直接交给浏览器；
+      // 没装 FormData 的环境（node harness）由测试侧补一个假件。
+      const resp = await fetch("/v1/asr", {
+        method: "POST",
+        headers: authHeaders(),
+        body: form,
+      });
+      if (!resp.ok) {
+        let detail = resp.statusText;
+        try {
+          const body = await resp.json();
+          if (body && body.detail) detail = body.detail;
+        } catch (_) { /* 不是 JSON，用 statusText */ }
+        throw new Error(detail);
+      }
+      // 顺序敏感：先取文本、再读 body。两个都读的响应体只能读一次，
+      // 所以这里不允许「先 log 一下整个 body」——那会把 json() 吃空。
+      const out = await resp.json();
+      const text = (out && out.text ? String(out.text) : "").trim();
+      if (!text) {
+        setVoiceStatus("没听清，再说一次？", true);
+        return;
+      }
+      // 追加而不是覆盖：用户可能已经打了几个字，识别结果接在后面
+      el.input.value = el.input.value ? el.input.value + " " + text : text;
+      autoGrow();
+      el.input.focus();
+      setVoiceStatus("", false);
+    } catch (err) {
+      setVoiceStatus("识别失败：" + (err && err.message ? err.message : err), true);
+    }
+  }
+
+  /** AI 气泡上的「播放」按钮。点一下合成并播这一句。 */
+  async function playMessage(text, btn) {
+    if (!state.personaId) return;
+    if (state.audio) {
+      state.audio.pause();
+      state.audio = null;
+    }
+    if (btn) btn.disabled = true;
+    try {
+      const resp = await fetch("/v1/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        // user_id 决定读哪一份情绪：她的语气跟这个用户的对话状态走。
+        body: JSON.stringify({ text: text, persona_id: state.personaId, user_id: state.userId }),
+      });
+      if (!resp.ok) {
+        let detail = resp.statusText;
+        try {
+          const body = await resp.json();
+          if (body && body.detail) detail = body.detail;
+        } catch (_) { /* 忽略 */ }
+        throw new Error(detail);
+      }
+      const buf = await resp.arrayBuffer();
+      const url = URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+      const audio = new Audio(url);
+      state.audio = audio;
+      audio.addEventListener("ended", () => URL.revokeObjectURL(url));
+      await audio.play();
+    } catch (err) {
+      setVoiceStatus("播放失败：" + (err && err.message ? err.message : err), true);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  /** 在一段 AI 文本下面挂「播放」。DOM 里有个稳定 id/class 给测试钉住。 */
+  function attachPlayButton(container, text) {
+    if (!container || !text) return null;
+    let btn = container.querySelector(".msg-play");
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "msg-play";
+      btn.textContent = "▶ 听她念";
+      btn.title = "用她的声音说这一段";
+      btn.addEventListener("click", () => playMessage(btn.dataset.text || "", btn));
+      container.appendChild(btn);
+    }
+    btn.dataset.text = text;
+    return btn;
   }
 
   // ───────────────────────────── 输入框行为 ─────────────────────────────
@@ -2636,6 +2829,15 @@
     setConn("未连接", "pill-idle");
   });
 
+  // 语音（M4-C）。按钮在不支持录音的环境里保持 disabled（见 canRecord）。
+  if (el.btnMic) {
+    el.btnMic.addEventListener("click", toggleRecording);
+    el.btnMic.disabled = !canRecord();
+    if (!canRecord()) {
+      el.btnMic.title = "这个浏览器不支持录音（需要 https 或 localhost）";
+    }
+  }
+
   // 账号（M3-H）
   el.btnShowAuth.addEventListener("click", () => openAuth("login"));
   el.btnLogout.addEventListener("click", () => {
@@ -2682,6 +2884,13 @@
     isOwnPersona,
     listingGate,
     ownerClaim,
+    // 语音（M4-C）。前端判据只能断到「按钮存在 + 点了会调 /v1/asr +
+    // 结果进了输入框」——真录音断言不了，所以不引入浏览器自动化。
+    toggleRecording,
+    uploadRecording,
+    playMessage,
+    attachPlayButton,
+    canRecord,
   };
 
   restoreAccount().finally(() => {

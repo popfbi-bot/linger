@@ -78,6 +78,20 @@ class Settings:
         default_factory=lambda: _env_float("LINGER_LLM_BREAKER_COOLDOWN", 60.0)
     )
 
+    # 语音（M4-C）。听：`LINGER_ASR`；说：`LINGER_TTS`。
+    #
+    # 默认都是 mock——不配任何东西就能跑通完整链路（含情绪韵律），CI 也不联网。
+    # 真实 provider 目前只有配置位，没有实现：`get_asr()/get_tts()` 见到不认识
+    # 或未接入的名字会**降级到 mock 并记录下来**（`/v1/voice/health` 能看到），
+    # 而不是崩掉——配错一个环境变量不该让整个服务起不来。
+    asr_provider: str = field(default_factory=lambda: _env("LINGER_ASR", "mock"))
+    tts_provider: str = field(default_factory=lambda: _env("LINGER_TTS", "mock"))
+    # 单次上传音频的上限（字节）。8MB ≈ 一分钟 16bit/44.1kHz 单声道 WAV，
+    # 也远小于任何反向代理的默认 body 上限——卡在应用层是为了给出 413 而不是连接被切断。
+    voice_max_audio_bytes: int = field(
+        default_factory=lambda: _env_int("LINGER_VOICE_MAX_AUDIO_BYTES", 8 * 1024 * 1024)
+    )
+
     # 账号（M3-H）。令牌的自签密钥。
     #
     # 不配也能跑（默认随机生成一个进程内密钥），但要付出代价：进程一重启，

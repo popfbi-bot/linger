@@ -24,6 +24,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import secrets
 from collections.abc import AsyncIterator, Iterator
@@ -33,11 +35,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ..accounts import Account
 from ..accounts.service import (
@@ -59,12 +61,22 @@ from ..llm.base import LLMRuntimeError
 from ..market import service as market_service
 from ..market.service import MarketError
 from ..memory.embedding import get_embedder
-from ..models import CompanionProfile, DiaryEntry, MemoryEditRecord, PersonaCard, new_id, now_utc
+from ..models import (
+    PAD,
+    CompanionProfile,
+    DiaryEntry,
+    MemoryEditRecord,
+    PersonaCard,
+    new_id,
+    now_utc,
+)
 from ..orchestrator import Orchestrator
 from ..persona.generator import PersonaGenerateError, generate_persona
 from ..persona.wizard import PersonaWizardError, preview_draft
 from ..storage import get_repository
 from ..storage.base import Repository
+from ..voice import AudioRejected, VoiceError, get_asr, get_tts, prosody_for, voice_params
+from ..voice import fallback_notes as voice_fallback_notes
 
 # 记忆正文长度上限：提炼后的短句，500 字足够容纳「我妈妈下周要去医院复查」这类口径。
 MEMORY_CONTENT_MAX = 500
@@ -74,6 +86,14 @@ MIN_TRANSCRIPT_ROWS = 3
 
 # 前端静态资源目录（index.html / app.js / style.css）
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# 音频判定的最小长度（字节）。4 字节连一个 WAV 头都不够，正常录音不会这么短——
+# 所以「空上传」和「把一段 JSON 当音频发」在入口就挡掉，不让它们走到 provider 里。
+MIN_AUDIO_BYTES = 4
+
+# 合规红线（§3.1.3）：cloned 卡是「复刻一个真人」，它的声音不许被合成出来。
+# 与「cloned 不许上架」同源——那一棒管的是分发，这一棒管的是第二张嘴。
+VOICE_BLOCKED_PROVENANCE = "cloned"
 
 # --------------------------------------------------------------------------- #
 # 请求体
@@ -714,6 +734,130 @@ def _first_event(events: Iterator[Any]) -> tuple[Any | None, Iterator[Any]]:
     return buffered, events
 
 
+class TTSRequest(BaseModel):
+    """合成请求。
+
+    `user_id` 决定读哪一份情绪状态（PAD 是按 `(persona_id, user_id)` 存的）；
+    不给就当匿名用户——于是「没聊过天」的请求自然落在中性的基线上，
+    不需要在这里编一个默认 PAD。
+    """
+
+    text: str = Field(..., description="要说的话")
+    persona_id: str = Field(..., description="用谁的嗓音/语体说")
+    user_id: str = Field(default="", description="读谁的情绪状态。不给按匿名用户处理")
+
+    @field_validator("text")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        # 空白文本合成出来是一段静音，用户点「播放」听不到任何东西——
+        # 那是比报错更糟的反馈（他会以为坏了，然后一直点）。
+        if not v or not v.strip():
+            raise ValueError("text 不能为空")
+        if len(v) > TTS_TEXT_MAX:
+            raise ValueError(f"text 不能超过 {TTS_TEXT_MAX} 字")
+        return v
+
+    @field_validator("persona_id")
+    @classmethod
+    def _persona_not_blank(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("persona_id 不能为空")
+        return v
+
+
+class ASRJsonRequest(BaseModel):
+    """base64 形态的识别请求（与 multipart 并存，见 `post_asr` 的说明）。"""
+
+    audio_base64: str = Field(default="", description="音频字节的 base64 编码")
+    language: str | None = Field(default=None, description="语言提示，如 zh / en；不给由 provider 判断")
+
+
+TTS_TEXT_MAX = 2000
+
+
+def _decode_b64(raw: str) -> bytes:
+    """宽松的 base64 解码：容忍 data URL 前缀与缺失的 padding。
+
+    为什么要宽松：前端用 `FileReader.readAsDataURL` 拿到的是
+    `data:audio/webm;base64,xxx`，而各家小程序 / 脚本拼出来的字符串
+    padding 时有时无。这不是「参数校验可以不严」——真正的校验在其后
+    （长度、头部字节），base64 本身的宽容只是不让人卡在格式细节上。
+    """
+    s = (raw or "").strip()
+    if s.startswith("data:"):
+        comma = s.find(",")
+        s = s[comma + 1 :] if comma != -1 else ""
+    s = "".join(s.split())
+    if not s:
+        return b""
+    pad = (-len(s)) % 4
+    try:
+        return base64.b64decode(s + "=" * pad, validate=False)
+    except (binascii.Error, ValueError) as exc:
+        raise AudioRejected("audio_base64 不是合法的 base64") from exc
+
+
+def _looks_like_audio(data: bytes) -> bool:
+    """头部字节判定：只认「明显是音频容器」的几种。
+
+    不解析到底——那是 provider 的事。这里只挡「把一段 JSON / 一张图片当音频发」，
+    因为那种输入走到 provider 里只会换来一个更难解释的错误。
+    判定宽松是刻意的：宁可让 provider 对一个可疑容器报错，也不要因为
+    某个新格式（比如 opus in ogg）不在这里的名单上就把用户挡在门外。
+    """
+    if len(data) < MIN_AUDIO_BYTES:
+        return False
+    head = data[:12]
+    return (
+        head[:4] in (b"RIFF", b"OggS", b"fLaC", b"FORM")  # wav / ogg / flac / aiff
+        or head[:4] == b"\x1aE\xdf\xa3"  # webm / mkv（MediaRecorder 的默认格式）
+        or head[4:8] == b"ftyp"  # mp4 / m4a
+        or head[:3] == b"ID3"  # mp3（带 ID3 头）
+        or head[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")  # mp3 裸帧
+    )
+
+
+async def _json_body(request: Any) -> dict[str, Any] | None:
+    """读 JSON body，读不出来就返回 None（由调用方决定是 422 还是别的）。
+
+    `request.json()` 在空 body 上会抛；空 body 与「不是 JSON」在这里等价——
+    对调用方都是「你没给音频」。
+    """
+    raw = await request.body()
+    if not raw.strip():
+        return None
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _validation_detail(exc: Any) -> str:
+    """pydantic 的报错压成一句话：前端只需要知道「哪个字段不对」。"""
+    errors = getattr(exc, "errors", lambda: [])()
+    parts = []
+    for e in errors:
+        loc = ".".join(str(x) for x in e.get("loc", ())) or "body"
+        parts.append(f"{loc}: {e.get('msg', '不合法')}")
+    return "；".join(parts) or "请求体不合法"
+
+
+def _synthesize_audio(
+    tts: Any,
+    text: str,
+    *,
+    voice: dict[str, Any],
+    pad: Any,
+) -> bytes:
+    """把「说这句话」集中在这里：HTTP 层与测试都走同一条路。
+
+    prosody 由 PAD 现算，不缓存：同一句「我在」，她心情不同就该说得不同。
+    """
+    return tts.synthesize(text, voice=voice, prosody=prosody_for(pad))
+
+
 # --------------------------------------------------------------------------- #
 # 应用工厂
 # --------------------------------------------------------------------------- #
@@ -725,6 +869,8 @@ def create_app(
     embedder: Any | None = None,
     db_path: Path | None = None,
     auth_secret: str | None = None,
+    asr: Any | None = None,
+    tts: Any | None = None,
 ) -> FastAPI:
     """构造 FastAPI 应用。
 
@@ -733,6 +879,10 @@ def create_app(
 
     `auth_secret`：令牌自签密钥。不传就用 `settings.auth_secret`，
     它也为空时**每个进程随机生成一个**——见 `_resolve_auth_secret`。
+
+    `asr` / `tts`：语音 provider。不传则按 `LINGER_ASR` / `LINGER_TTS` 装配
+    （默认 mock）。测试插入自己的实时 mock 就是为了断言「provider 收到了什么参数」——
+    那些参数是韵律判据唯一可断言的证据。
     """
     secret = auth_secret or _resolve_auth_secret()
 
@@ -742,6 +892,10 @@ def create_app(
         # `/v1/llm/health` 要读它的熔断状态与最近一次调用的观测数据，
         # 而 Orchestrator 只认 LLMProvider 协议（韧性与观测都在协议之外）。
         app.state.llm = llm or get_provider()
+        # 语音 provider 同样在装配时定下来：`/v1/voice/health` 要读它，
+        # 而端点只认 `ASRProvider` / `TTSProvider` 协议（不认具体实现）。
+        app.state.asr = asr if asr is not None else get_asr()
+        app.state.tts = tts if tts is not None else get_tts()
 
         # 外部注入的 repo 由调用方负责关闭，这里不接管
         if repo is not None:
@@ -1856,6 +2010,174 @@ def create_app(
         if trace is None:
             raise HTTPException(status_code=404, detail=f"trace 不存在: {turn_id}")
         return trace
+
+    # ------------------------------------------------------------------ #
+    # 语音（M4-C）：听 / 说 / 观测
+    # ------------------------------------------------------------------ #
+    # 这一层是**加出来的**：不碰 send_message / orchestrator / compose 的任何一行。
+    # 文本链路照旧，语音只是「另一条进入对话的入口」和「另一条离开对话的出口」。
+    def get_asr_dep() -> Any:
+        return app.state.asr
+
+    def get_tts_dep() -> Any:
+        return app.state.tts
+
+    @app.get("/v1/voice/health")
+    def voice_health(
+        asr: Any = Depends(get_asr_dep),
+        tts: Any = Depends(get_tts_dep),
+    ) -> dict[str, Any]:
+        """谁在听、谁在说、有没有发生降级。
+
+        与 `/v1/llm/health` 同构：配置了真实 provider 却没接上时，降级必须是
+        **看得见**的。静默降级等于骗人——用户会以为自己在用 Whisper。
+        """
+        notes = voice_fallback_notes()
+        return {
+            "asr": {
+                "configured": settings.asr_provider,
+                "provider": getattr(asr, "name", "unknown"),
+                "fallback": notes.get("asr"),
+            },
+            "tts": {
+                "configured": settings.tts_provider,
+                "provider": getattr(tts, "name", "unknown"),
+                "fallback": notes.get("tts"),
+            },
+        }
+
+    @app.post("/v1/asr")
+    async def post_asr(
+        request: Request,
+        asr: Any = Depends(get_asr_dep),
+    ) -> dict[str, Any]:
+        """音频 → 文字。**两种提交方式并存**，不选一种。
+
+        原计划是「选一种并在 PR 里说明」。实际做下来发现两个调用方的形状不同：
+
+          · 浏览器 `MediaRecorder` 手里是一个 `Blob`，`FormData` 直接塞进去最自然，
+            不用先 base64（那要多一次 33% 体积膨胀和一次内存拷贝）；
+          · 脚本 / 测试 / 未来的小程序手里是 base64 字符串，multipart 反而别扭。
+
+        两者都在入口合并到**同一个字节流**上，之后走完全相同的校验与 provider。
+        所以「两种入口」不是两套实现，只是两种信封。
+
+        请求体**自己拆**，不用 `File(...)` / `Body(...)` 声明：FastAPI 不允许同一个
+        端点既声明 `UploadFile` 又声明 JSON body（它只认一种 content-type，
+        另一种会被判 422 且信息误导）。手拆的代价是十来行，换来的是
+        「同一张表里两种信封都成立」，以及一条清晰的分支——值。
+
+        错误码（判据 2 的红线）：空音频 / 非音频字节 → **422**，绝不是 500。
+        500 意味着「服务端坏了」，而这两种情况都是「你发的东西不对」。
+        """
+        content_type = (request.headers.get("content-type") or "").lower()
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            upload = form.get("audio")
+            if isinstance(upload, str) or upload is None:
+                raise HTTPException(status_code=422, detail="multipart 缺少 audio 文件字段")
+            data = await upload.read()
+            language = None
+        else:
+            payload = await _json_body(request)
+            if payload is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="缺少音频：用 multipart 的 audio 字段，或 JSON 的 audio_base64",
+                )
+            try:
+                parsed = ASRJsonRequest(**payload)
+            except ValidationError as exc:
+                raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
+            try:
+                data = _decode_b64(parsed.audio_base64)
+            except AudioRejected as exc:
+                # 422 而不是 500：坏 base64 是「你发的东西不对」，不是服务端坏了
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            language = (parsed.language or "").strip() or None
+
+        if not data:
+            raise HTTPException(status_code=422, detail="音频为空")
+        if len(data) > settings.voice_max_audio_bytes:
+            # 413 而不是 422：格式没问题是太大了，告警语义不同
+            raise HTTPException(
+                status_code=413,
+                detail=f"音频过大：{len(data)} 字节，上限 {settings.voice_max_audio_bytes}",
+            )
+        if not _looks_like_audio(data):
+            raise HTTPException(
+                status_code=422,
+                detail="不是可识别的音频（支持 wav / webm / ogg / mp3 / m4a）",
+            )
+
+        try:
+            text = asr.transcribe(data, language=language)
+        except AudioRejected as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except VoiceError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"text": text, "bytes": len(data)}
+
+    def _prosody_source(repo: Repository, persona_id: str, user_id: str) -> PAD:
+        """这一句该用什么样的情绪基线。
+
+        三档，从具体到中性：
+          1. 这个用户跟这个人格聊过 → 用他此刻的 PAD（真实情绪）；
+          2. 没聊过 → 用这个人格的基线（她平时就是这个调子）；
+          3. 连人格都没有 → 中性的 PAD()（不该发生，人格不存在在前面已经 404）。
+        """
+        state = repo.get_affect(persona_id, user_id) if user_id else None
+        if state is not None:
+            return state.pad
+        card = repo.get_persona(persona_id)
+        if card is not None:
+            return card.affect.baseline
+        return PAD()
+
+    @app.post("/v1/tts")
+    def post_tts(
+        body: TTSRequest,
+        repo: Repository = Depends(get_repo),
+        tts: Any = Depends(get_tts_dep),
+    ) -> Response:
+        """文字 → 音频（`audio/wav`）。
+
+        三件事按顺序，每一步都有个非它不可的理由：
+
+        1. **人格必须存在**（404）。没有它就没有嗓音，也就没有「她是谁」。
+        2. **cloned 卡不许出声**（403）。复刻一个真人的说话方式，已经是这条产品
+           最敏感的边界（§3.1.3）；再给他配一张合成的嘴，等于把「像他」升级成
+           「就是他」。这与「cloned 不许上架」同源，是同一道红线的第二面。
+        3. **情绪决定韵律**，不是装饰。同一句「我在」，她在焦躁和低落时
+           说得不一样——见 `voice/prosody.py`。
+        """
+        card = repo.get_persona(body.persona_id)
+        if card is None:
+            raise HTTPException(status_code=404, detail=f"人格不存在: {body.persona_id}")
+        if str((card.provenance or {}).get("type") or "") == VOICE_BLOCKED_PROVENANCE:
+            raise HTTPException(
+                status_code=403,
+                detail="这张人格卡是复刻真人的（cloned），不允许合成声音",
+            )
+
+        pad = _prosody_source(repo, card.id, body.user_id.strip())
+        voice = voice_params(card.voice.model_dump(), body.text)
+        try:
+            audio = _synthesize_audio(tts, body.text, voice=voice, pad=pad)
+        except VoiceError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        # Content-Length 由 Response 自己算；这里只钉媒体类型与「别缓存」：
+        # 同一段文本在不同情绪下的音频不同（URL 却一样），缓存住就会播错情绪。
+        return Response(
+            content=audio,
+            media_type="audio/wav",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Prosody-Rate": f"{prosody_for(pad)['rate']:.2f}",
+                "X-Prosody-Pitch": f"{prosody_for(pad)['pitch']:.2f}",
+            },
+        )
 
     # ------------------------------------------------------------------ #
     # 前端（最小可跑界面）
