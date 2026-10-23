@@ -22,6 +22,9 @@
     personaId: null,
     sessionId: null,
     userId: ensureUserId(),   // 本机身份，localStorage 持久化（见 ensureUserId）
+    // 账号（M3-H）。没登录时是 null，userId 就是本机的匿名 id——行为与今天完全一样。
+    account: null,            // {user_id, email, ...}，来自 /v1/auth/me 或 login
+    authMode: "login",        // "login" | "register"，登录浮层当前在哪个模式
     personaName: "",
     busy: false,
     lastTurnId: null,
@@ -61,6 +64,19 @@
   const $ = (id) => document.getElementById(id);
 
   const el = {
+    accountState: $("account-state"),
+    btnShowAuth: $("btn-show-auth"),
+    btnLogout: $("btn-logout"),
+    authPanel: $("auth-panel"),
+    authTitle: $("auth-title"),
+    authHint: $("auth-hint"),
+    authEmail: $("auth-email"),
+    authPassword: $("auth-password"),
+    authSubmit: $("btn-auth-submit"),
+    btnAuthSwitch: $("btn-auth-switch"),
+    btnAuthClose: $("btn-auth-close"),
+    authError: $("auth-error"),
+    authClaimHint: $("auth-claim-hint"),
     personaList: $("persona-list"),
     myPersonaList: $("my-persona-list"),
     myPersonaCount: $("my-persona-count"),
@@ -175,11 +191,46 @@
     setTimeout(() => div.remove(), 6000);
   }
 
+  // ───────────────────────────── 账号（M3-H） ─────────────────────────────
+
+  /** 令牌存在 localStorage。
+   *
+   * 为什么不存 user_id 一起：user_id 的真相在 localStorage 的 `linger.user_id`，
+   * 而「我是谁」的真相在服务端。本地只存令牌，刷新后靠 `/v1/auth/me` 换回账号——
+   * 令牌一过期，本地那份 user_id 就该退回匿名，而不是留着一个假的登录态。
+   */
+  const TOKEN_KEY = "linger.token";
+
+  function getToken() {
+    try { return localStorage.getItem(TOKEN_KEY) || ""; } catch (_) { return ""; }
+  }
+
+  function setToken(token) {
+    try {
+      if (token) localStorage.setItem(TOKEN_KEY, token);
+      else localStorage.removeItem(TOKEN_KEY);
+    } catch (_) { /* 隐私模式：本次会话内仍然可用（state.account 在内存里） */ }
+  }
+
+  /** 给所有请求带上令牌。没令牌时不加头——**匿名请求与今天逐字节相同**（判据 5）。 */
+  function authHeaders() {
+    const token = getToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
   async function api(path, options = {}) {
+    // `headers` 放在 ...options **之后**：调用方要能覆盖 Content-Type，
+    // 但 Authorization 不能被一次 {...options} 展开整体冲掉。
     const resp = await fetch(path, {
-      headers: { "Content-Type": "application/json" },
       ...options,
+      headers: { "Content-Type": "application/json", ...authHeaders(), ...(options.headers || {}) },
     });
+    if (resp.status === 401 && getToken()) {
+      // 令牌坏了就当场清掉，别让它一直污染后续请求（每个请求 401 会变成一片报错）
+      setToken("");
+      state.account = null;
+      renderAccount();
+    }
     if (!resp.ok) {
       let detail = resp.statusText;
       try {
@@ -190,6 +241,139 @@
       throw new Error(`${resp.status} ${detail}`);
     }
     return resp.json();
+  }
+
+  /** 顶栏的登录态。**未登录时不隐藏任何功能**（判据 8：不弹登录墙）。 */
+  function renderAccount() {
+    if (state.account) {
+      el.accountState.textContent = `已登录 · ${state.account.email}`;
+      el.accountState.className = "pill pill-account";
+      el.accountState.title = `账号 ${state.account.user_id}`;
+      el.btnShowAuth.hidden = true;
+      el.btnLogout.hidden = false;
+    } else {
+      el.accountState.textContent = "未登录 · 数据在本机";
+      el.accountState.className = "pill pill-anon";
+      el.accountState.title = "登录后换设备也能找回聊过的事";
+      el.btnShowAuth.hidden = false;
+      el.btnLogout.hidden = true;
+    }
+  }
+
+  function openAuth(mode) {
+    state.authMode = mode || "login";
+    el.authPanel.hidden = false;
+    el.authError.hidden = true;
+    el.authClaimHint.hidden = true;
+    const registering = state.authMode === "register";
+    el.authTitle.textContent = registering ? "注册" : "登录";
+    el.authHint.textContent = registering
+      ? "注册后，本机现在这些对话会被认领到账号下——换设备也能接着聊。"
+      : "登录后，换设备也能找回你和她们聊过的事。";
+    el.authSubmit.textContent = registering ? "注册" : "登录";
+    el.btnAuthSwitch.textContent = registering ? "已有账号？登录" : "没有账号？注册";
+    el.authPassword.autocomplete = registering ? "new-password" : "current-password";
+    el.authEmail.focus();
+  }
+
+  function closeAuth() {
+    el.authPanel.hidden = true;
+    el.authPassword.value = "";
+  }
+
+  /** 登录/注册成功之后：令牌落盘、user_id 换成账号的、把匿名数据认领过来。
+   *
+   * 三件事的顺序不能换：
+   *   1. 先落令牌——后面两个请求都要靠它；
+   *   2. 再换 user_id——否则认领之后的请求还会带着旧的匿名 id 写数据（会 409）；
+   *   3. 最后认领——这一步把「登录之前聊的那些」搬到账号名下。
+   *      没有第 3 步，用户会觉得「登录之后我之前聊的没了」，那比记不住更糟。
+   */
+  async function onAuthed(payload) {
+    setToken(payload.token);
+    state.account = { user_id: payload.user_id, email: payload.email };
+    state.userId = payload.user_id;
+    try { localStorage.setItem("linger.user_id", payload.user_id); } catch (_) { /* 忽略 */ }
+    renderAccount();
+
+    const personas = [];
+    if (state.personaId) personas.push(state.personaId);
+    if (state.templateId) {
+      try {
+        const list = await api("/v1/personas");
+        for (const p of list.personas || []) if (!personas.includes(p.id)) personas.push(p.id);
+      } catch (_) { /* 认领是加分项，拉不到列表就不认领 */ }
+    }
+
+    if (personas.length) {
+      try {
+        const claimed = await api("/v1/auth/claim", {
+          method: "POST",
+          body: JSON.stringify({ persona_ids: personas }),
+        });
+        const n = (claimed.claimed?.memories || 0) + (claimed.claimed?.diaries || 0);
+        if (n > 0) {
+          el.authClaimHint.textContent =
+            `已把本机的 ${claimed.claimed.memories} 条记忆、${claimed.claimed.diaries} 篇日记接到账号下。`;
+          el.authClaimHint.hidden = false;
+          if (state.sessionId) await refreshMemories();
+        }
+      } catch (err) {
+        // 认领失败不该让登录失败：账号已经进去了，数据还在本机匿名 id 下（下次还能认）
+        el.authClaimHint.textContent = "登录成功，但本机数据暂时没能认领：" + err.message;
+        el.authClaimHint.hidden = false;
+      }
+    }
+  }
+
+  async function submitAuth() {
+    const email = el.authEmail.value.trim();
+    const password = el.authPassword.value;
+    el.authError.hidden = true;
+    if (!email || !password) {
+      el.authError.textContent = "邮箱和密码都要填";
+      el.authError.hidden = false;
+      return;
+    }
+    el.authSubmit.disabled = true;
+    try {
+      const path = state.authMode === "register" ? "/v1/auth/register" : "/v1/auth/login";
+      const payload = await api(path, {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      });
+      await onAuthed(payload);
+      el.authPassword.value = "";
+      if (!el.authClaimHint.hidden) {
+        // 有认领结果就先让用户看一眼，再关面板
+        setTimeout(closeAuth, 1800);
+      } else {
+        closeAuth();
+      }
+    } catch (err) {
+      el.authError.textContent =
+        state.authMode === "register"
+          ? "注册失败：" + err.message
+          : "邮箱或密码不正确";   // 与后端文案一致：不区分「没这个邮箱」与「密码错」
+      el.authError.hidden = false;
+    } finally {
+      el.authSubmit.disabled = false;
+    }
+  }
+
+  /** 刷新页面时确认「这个令牌还算数吗」。失败就安静退回匿名，不弹任何东西。 */
+  async function restoreAccount() {
+    if (!getToken()) { renderAccount(); return; }
+    try {
+      const me = await api("/v1/auth/me");
+      state.account = me;
+      state.userId = me.user_id;
+      try { localStorage.setItem("linger.user_id", me.user_id); } catch (_) { /* 忽略 */ }
+    } catch (_) {
+      setToken("");
+      state.account = null;
+    }
+    renderAccount();
   }
 
   // 情绪标签 → CSS class。与 affect/engine.py::label_for 的六种取值一一对应。
@@ -1875,7 +2059,9 @@
   async function openSession(personaId, personaName) {
     const body = {
       persona_id: personaId,
-      user_id: state.userId,   // 浏览器端单用户；多用户时换成登录态
+      // 登录后 user_id 换成账号的（判据 8）：所有状态都按 (persona_id, user_id) 存，
+      // 所以「换设备登录 → 同一个 user_id → 记忆跟过来」是这一行在起作用。
+      user_id: state.userId,
     };
     if (state.scenarioId) body.scenario_id = state.scenarioId;
 
@@ -2109,6 +2295,26 @@
     setConn("未连接", "pill-idle");
   });
 
+  // 账号（M3-H）
+  el.btnShowAuth.addEventListener("click", () => openAuth("login"));
+  el.btnLogout.addEventListener("click", () => {
+    setToken("");
+    state.account = null;
+    // 内存里保留当前会话，但身份退回「本机匿名 id」——
+    // 必须先记住匿名 id 再退出，否则退出后写到账号名下就成了跨账号写（后端会 409）。
+    state.userId = ensureUserId();
+    renderAccount();
+    setConn("已退出 · 数据在本机", "pill-idle");
+  });
+  el.btnAuthSwitch.addEventListener("click", () => {
+    openAuth(state.authMode === "register" ? "login" : "register");
+  });
+  el.btnAuthClose.addEventListener("click", closeAuth);
+  el.authSubmit.addEventListener("click", submitAuth);
+  el.authPassword.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submitAuth();
+  });
+
   // 手动校正人生阶段（M2-B）：改完立即保存
   el.companionStage.addEventListener("change", (e) => {
     saveCompanionStage(e.target.value);
@@ -2116,9 +2322,13 @@
 
   // ───────────────────────────── 启动 ─────────────────────────────
 
-  loadTemplates();
-  loadMyPersonas();
-  loadScenarios();
+  // 先确认登录态再拉数据：人格列表与「我的人格」都按 user_id 过滤，
+  // 顺序反了会先按匿名 id 渲染一遍再闪一下换成账号的。
+  restoreAccount().finally(() => {
+    loadTemplates();
+    loadMyPersonas();
+    loadScenarios();
+  });
 
   // 页面打开时顺手探一下服务是否活着
   fetch("/health")

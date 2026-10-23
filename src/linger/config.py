@@ -78,6 +78,17 @@ class Settings:
         default_factory=lambda: _env_float("LINGER_LLM_BREAKER_COOLDOWN", 60.0)
     )
 
+    # 账号（M3-H）。令牌的自签密钥。
+    #
+    # 不配也能跑（默认随机生成一个进程内密钥），但要付出代价：进程一重启，
+    # 旧令牌全部作废——用户会莫名其妙被登出。所以**生产必须显式配**，
+    # 开发/CI 用随机值即可（CI 里没有可泄露的秘密，也不做持久会话）。
+    # 不写死任何默认密钥：默认值是仓库里的公开字符串，等于没有签名。
+    auth_secret: str = field(default_factory=lambda: _env("LINGER_AUTH_SECRET"))
+    auth_token_ttl: int = field(
+        default_factory=lambda: _env_int("LINGER_AUTH_TOKEN_TTL", 30 * 24 * 3600)
+    )
+
     # 上下文预算（§3.6.2）
     context_budget_tokens: int = 8000
 

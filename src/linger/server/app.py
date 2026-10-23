@@ -25,19 +25,31 @@
 from __future__ import annotations
 
 import json
+import secrets
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import date as date_cls
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from ..accounts import Account
+from ..accounts.service import (
+    AUTH_FAILED_MESSAGE,
+    AccountError,
+    authenticate,
+    bearer_token,
+    claim_anonymous_data,
+    register,
+    resolve_token,
+    token_for,
+)
 from ..companion import LIFE_STAGES, correct_life_stage, life_stage_valid
 from ..config import settings
 from ..diary import DiaryGenerateError, generate_diary
@@ -332,6 +344,84 @@ class UpdateMemoryRequest(BaseModel):
         return v
 
 
+class RegisterRequest(BaseModel):
+    """注册：邮箱 + 密码（判据 1）。
+
+    密码**不在 schema 层做复杂度规则**，只在 service 层校验长度：
+    复杂度规则（大小写/符号）对陪伴产品是负价值，用户会写在便签上。
+    长度下限 8 挡住的是「随手一试」，那才是真实威胁。
+    """
+
+    email: str = Field(..., min_length=3, max_length=254, description="登录邮箱")
+    password: str = Field(..., min_length=1, max_length=128, description="至少 8 位")
+    display_name: str = Field(default="", max_length=40, description="显示名，可空")
+
+
+class LoginRequest(BaseModel):
+    """登录。字段名与注册一致，前端两个表单可以共用一套取值逻辑。"""
+
+    email: str = Field(..., min_length=1, max_length=254)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class ClaimRequest(BaseModel):
+    """认领匿名数据（判据 6）。
+
+    `persona_ids` 必填，且**必须显式**：记忆按 `(persona_id, user_id)` 存，
+    服务端凭什么知道该搬哪些人格下的数据？扫全库会把别人的搬进来。
+    只搬用户当前界面上看得见的那几个人格，是唯一安全的默认。
+
+    `source_user_ids` 可选：不给就由服务端在这些 persona 的会话里找。
+    给了也只在这个范围内生效（服务端仍会核对会话归属与身份）。
+    """
+
+    persona_ids: list[str] = Field(..., min_length=1, max_length=50)
+    source_user_ids: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("persona_ids")
+    @classmethod
+    def _not_blank(cls, v: list[str]) -> list[str]:
+        out = [x.strip() for x in v if x and x.strip()]
+        if not out:
+            raise ValueError("persona_ids 不能为空")
+        return out
+
+
+def _account_http_error(exc: AccountError) -> HTTPException:
+    """AccountError.kind → 状态码。**只有这一处做这个翻译**。
+
+    `auth_failed` 固定 401 + 固定文案：文案若由调用方各自拼，
+    迟早会有人拼出「该邮箱未注册」——那判据 3 就破了。
+    """
+    status = {
+        "email_taken": 409,
+        "invalid_email": 422,
+        "weak_password": 422,
+        "invalid_input": 422,
+        "auth_failed": 401,
+    }.get(exc.kind, 400)
+    headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
+    return HTTPException(
+        status_code=status,
+        detail=AUTH_FAILED_MESSAGE if exc.kind == "auth_failed" else exc.message,
+        headers=headers,
+    )
+
+
+def _resolve_auth_secret() -> str:
+    """令牌密钥：显式配置优先，否则每进程随机一个。
+
+    随机默认值的代价是「重启后所有令牌作废」（用户被登出），
+    但比起「仓库里写死一个密钥所有人共用」，这个代价小得多——
+    写死的密钥等于没有签名，任何人都能签出合法令牌。
+
+    所以生产必须配 `LINGER_AUTH_SECRET`；开发与 CI 用随机值即可。
+    """
+    if settings.auth_secret:
+        return settings.auth_secret
+    return secrets.token_urlsafe(32)
+
+
 # --------------------------------------------------------------------------- #
 # 序列化
 # --------------------------------------------------------------------------- #
@@ -545,12 +635,17 @@ def create_app(
     llm: Any | None = None,
     embedder: Any | None = None,
     db_path: Path | None = None,
+    auth_secret: str | None = None,
 ) -> FastAPI:
     """构造 FastAPI 应用。
 
     传入 repo/llm/embedder 时直接复用（测试用）；
     不传则在 lifespan 里按 settings 创建（生产/dev 用）。
+
+    `auth_secret`：令牌自签密钥。不传就用 `settings.auth_secret`，
+    它也为空时**每个进程随机生成一个**——见 `_resolve_auth_secret`。
     """
+    secret = auth_secret or _resolve_auth_secret()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -602,6 +697,104 @@ def create_app(
 
     def get_repo() -> Repository:
         return app.state.repo
+
+    # ------------------------------------------------------------------ #
+    # 身份：可选 Bearer 令牌（判据 4 / 5 的边界就在这里）
+    # ------------------------------------------------------------------ #
+    def _resolve_actor(authorization: str | None) -> Account | None:
+        token = bearer_token(authorization)
+        if token is None:
+            return None
+        return resolve_token(app.state.repo, token, secret)
+
+    def get_actor(
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Account | None:
+        """带令牌就认出是谁，不带就返回 None。
+
+        **这是判据 5 的实现方式，也是整个改动的红线**：
+        它不抛 401。没有令牌 → None → 走原来的匿名逻辑，行为与今天逐字节相同。
+        令牌无效/过期 → 也返回 None，同样退回匿名玩法。
+
+        为什么不在这里 401：`Authorization` 是**可选**头，一旦它坏掉就让请求失败，
+        那么「换了台设备、令牌过期了，连匿名聊天都用不了」——用户看到的是一堵墙。
+        需要强制登录的端点（只有 `/v1/auth/me`）自己调 `require_actor`。
+        """
+        return _resolve_actor(authorization)
+
+    def require_actor(
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Account:
+        """必须是一个有效账号。伪造 / 过期 / 缺失令牌一律 401，**绝不是 500**（判据 4）。
+
+        只给「本来就没有匿名玩法」的端点用：`/v1/auth/me`、`/v1/auth/claim`。
+        """
+        account = _resolve_actor(authorization)
+        if account is None:
+            raise HTTPException(
+                status_code=401,
+                detail="未登录或登录已过期",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return account
+
+    async def optional_actor(
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Account | None:
+        """供**信任调用方 user_id** 的匿名端点使用：有令牌就核对，没有就不管。
+
+        两件事：
+        1. 带了令牌且有效 → 要求请求体里的 `user_id` 必须是这个账号的。
+           否则「登录了却还在往别人的 user_id 里写数据」——那是跨账号写。
+        2. 带了令牌但无效 → 401。这看上去与"判据 5"冲突，其实不是：
+           判据 5 说的是**不带令牌时行为不变**（匿名照旧），
+           不是「带一个假令牌也当匿名」。带假令牌是明确的攻击信号。
+
+        写成 async：FastAPI 对 async 依赖与 sync 依赖一视同仁，
+        但这里将来若要读库/打日志，async 不会把线程池吃掉。
+        """
+        account = _resolve_actor(authorization)
+        if account is None and bearer_token(authorization) is not None:
+            raise HTTPException(
+                status_code=401,
+                detail="令牌无效或已过期",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return account
+
+    def actor_user_id(account: Account | None) -> str | None:
+        """账号的 user_id（没登录就是 None）。只做取值，不判空。"""
+        return account.user_id if account is not None else None
+
+    def ensure_user(
+        account: Account | None, requested: str, *, allow_anonymous: bool = True
+    ) -> str:
+        """把「请求里的 user_id」与「令牌里的 user_id」对齐。
+
+        三种情况：
+          · 没登录（account is None）→ 原样返回 requested。**匿名玩法不变**（判据 5）。
+            调用方若不允许匿名，自己在此之前就 401 了。
+          · 登录了且 requested 就是自己的 → 返回它。
+          · 登录了但 requested 是别人的 → 409。
+
+        为什么是 409 而不是悄悄改成自己的 id：静默改写会让「你以为在跟林汐聊、
+        其实写进了另一个账号的记忆」这种 bug 永远查不出来。宁可报错。
+
+        为什么允许 requested 为空/不等于账号：前端登录后会把 localStorage 里的
+        user_id 换成账号的，但**其它客户端**（脚本、旧标签页）未必。
+        所以这里给的是「不匹配就报错」而不是「不匹配就猜」。
+        """
+        if account is None:
+            return requested
+        if requested and requested != account.user_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "登录身份与请求里的 user_id 不一致："
+                    f"当前账号是 {account.user_id}，请求写的是 {requested}"
+                ),
+            )
+        return account.user_id
 
     def get_orch() -> Orchestrator:
         return app.state.orch
@@ -725,6 +918,89 @@ def create_app(
                 detail=f"用户场景不存在或内置场景不可删: {scenario_id}",
             )
         return {"deleted": scenario_id}
+
+    # ------------------------------------------------------------------ #
+    # 账号（M3-H）
+    # ------------------------------------------------------------------ #
+    def _token_response(account: Account) -> dict[str, Any]:
+        """注册与登录共用的响应体。两处必须长得一模一样——
+        前端只写一份「存 token、换 user_id」的代码。"""
+        return {
+            "token": token_for(account, secret),
+            "token_type": "Bearer",
+            "expires_in": int(settings.auth_token_ttl),
+            "user_id": account.user_id,
+            **account.public_dict(),
+        }
+
+    @app.post("/v1/auth/register", status_code=201)
+    def register_endpoint(
+        body: RegisterRequest,
+        repo: Repository = Depends(get_repo),
+    ) -> dict[str, Any]:
+        """注册 → 201 + 稳定 user_id + 令牌（判据 1）。
+
+        同一邮箱再来一次 → 409。判定由存储层的 UNIQUE 完成（见 Repository.create_account），
+        这里只翻错误类型——不做「先查再插」，那在并发下会漏。
+
+        为什么注册直接给令牌：注册完还要再登录一次是纯噪音，
+        而「邮箱是我的」这件事在本棒没有验证流程（不做邮箱验证是 issue 的边界）。
+        """
+        try:
+            account = register(repo, body.email, body.password, body.display_name)
+        except AccountError as exc:
+            raise _account_http_error(exc) from exc
+        return _token_response(account)
+
+    @app.post("/v1/auth/login")
+    def login_endpoint(
+        body: LoginRequest,
+        repo: Repository = Depends(get_repo),
+    ) -> dict[str, Any]:
+        """登录 → 200 + 令牌；失败 → 401，**邮箱不存在与密码错完全一致**（判据 3）。
+
+        「一致」包括三处，任何一处的差异都能被用来枚举用户：
+          · 状态码（都是 401）
+          · 响应体（都是 `{"detail": "邮箱或密码不正确"}`）
+          · 耗时（不存在的邮箱也跑一次假 scrypt，见 accounts.security.dummy_verify）
+        """
+        try:
+            account = authenticate(repo, body.email, body.password)
+        except AccountError as exc:
+            raise _account_http_error(exc) from exc
+        return _token_response(account)
+
+    @app.get("/v1/auth/me")
+    def me_endpoint(account: Account = Depends(require_actor)) -> dict[str, Any]:
+        """我是谁。前端刷新页面后靠它判断「token 还有效吗」。
+
+        这是全站**唯一**强制登录的读端点：它存在的意义就是「确认身份」，
+        没有匿名语义可言。
+        """
+        return account.public_dict()
+
+    @app.post("/v1/auth/claim")
+    def claim_endpoint(
+        body: ClaimRequest,
+        account: Account = Depends(require_actor),
+        repo: Repository = Depends(get_repo),
+    ) -> dict[str, Any]:
+        """把匿名期间的记忆 / 日记 / 会话迁到账号名下（判据 6）。
+
+        **必须登录**：认领的目标是「我的账号」，没有账号就无从谈起。
+        匿名调用返回 401，而不是「悄悄什么都不做」。
+
+        `persona_ids` 来自请求：服务端只在这个范围内搬，
+        不会去扫「这个 user_id 在别人的人格下也有数据」——
+        那样等于给了一个读别人记忆的接口。
+        """
+        result = claim_anonymous_data(
+            repo,
+            account.user_id,
+            body.persona_ids,
+            body.source_user_ids or None,
+        )
+        return result.as_dict()
 
     # ------------------------------------------------------------------ #
     # 人格
@@ -880,15 +1156,19 @@ def create_app(
         body: CreateSessionRequest,
         repo: Repository = Depends(get_repo),
         orch: Orchestrator = Depends(get_orch),
+        account: Account | None = Depends(optional_actor),
     ) -> dict[str, Any]:
         if repo.get_persona(body.persona_id) is None:
             raise HTTPException(status_code=404, detail=f"人格不存在: {body.persona_id}")
+
+        # 登录后 user_id 必须与账号一致；未登录时原样使用（判据 5）。
+        user_id = ensure_user(account, body.user_id)
 
         # scenario_id 优先；老字段 scenario 兼容（可能是 id，也可能是自由文本，
         # 由 Orchestrator 决定怎么解释）。
         requested = body.scenario_id or body.scenario
         try:
-            session = orch.create_session(body.persona_id, body.user_id, requested)
+            session = orch.create_session(body.persona_id, user_id, requested)
         except ValueError as exc:
             # 场景 id 不存在 → 404（不是 500，也不是静默忽略）
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1112,12 +1392,14 @@ def create_app(
         persona_id: str,
         user_id: str,
         repo: Repository = Depends(get_repo),
+        account: Account | None = Depends(optional_actor),
     ) -> dict[str, Any]:
         """返回档案。不存在时返回**空档案**（200），不是 404。
 
         档案是可选状态：「还没有」是常态，不是错误。
         客户端拿到 `is_empty: true` 就该显示引导文案，而不是报错页。
         """
+        user_id = ensure_user(account, user_id)
         profile = repo.get_companion_profile(persona_id, user_id) or CompanionProfile(
             persona_id=persona_id, user_id=user_id
         )
@@ -1129,8 +1411,10 @@ def create_app(
         user_id: str,
         body: CorrectLifeStageRequest,
         repo: Repository = Depends(get_repo),
+        account: Account | None = Depends(optional_actor),
     ) -> dict[str, Any]:
         """用户手动校正人生阶段。非法阶段值由请求体校验挡成 422。"""
+        user_id = ensure_user(account, user_id)
         profile = correct_life_stage(repo, persona_id, user_id, body.life_stage)
         return {**_companion_detail(profile), "life_stages": list(LIFE_STAGES)}
 
@@ -1143,6 +1427,7 @@ def create_app(
         body: GenerateDiaryRequest,
         repo: Repository = Depends(get_repo),
         orch: Orchestrator = Depends(get_orch),
+        account: Account | None = Depends(optional_actor),
     ) -> dict[str, Any]:
         """让「她」写下今天。**同一天重复调用是覆盖**，不是新增。
 
@@ -1160,15 +1445,16 @@ def create_app(
         if card is None:
             raise HTTPException(status_code=404, detail=f"人格不存在: {persona_id}")
 
+        user_id = ensure_user(account, body.user_id)
         day = body.date or _today()
-        turns = _turns_of_day(repo, persona_id, body.user_id, day)
-        affect = repo.get_affect(persona_id, body.user_id)
+        turns = _turns_of_day(repo, persona_id, user_id, day)
+        affect = repo.get_affect(persona_id, user_id)
         affect_label = (affect.label if affect else "") or "中性"
-        memories = repo.list_memories(persona_id, body.user_id, limit=50)
+        memories = repo.list_memories(persona_id, user_id, limit=50)
 
         try:
             entry, warnings = generate_diary(
-                card, body.user_id, day, turns, memories, affect_label, orch.llm
+                card, user_id, day, turns, memories, affect_label, orch.llm
             )
         except DiaryGenerateError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1177,7 +1463,7 @@ def create_app(
 
         # 重写当天那篇时沿用原 id：日期没变，这篇日记还是同一篇。
         # 换 id 会让前端「高亮新日记」的 diff 看起来像换了一个对象。
-        existing = repo.get_diary(persona_id, body.user_id, day)
+        existing = repo.get_diary(persona_id, user_id, day)
         if existing is not None:
             entry.id = existing.id
         # upsert：唯一键 (persona_id, user_id, date)，所以这里天然是幂等的
@@ -1190,6 +1476,7 @@ def create_app(
         user_id: str,
         limit: int = 30,
         repo: Repository = Depends(get_repo),
+        account: Account | None = Depends(optional_actor),
     ) -> dict[str, Any]:
         """按日期倒序列出日记。
 
@@ -1198,6 +1485,7 @@ def create_app(
         """
         if repo.get_persona(persona_id) is None:
             raise HTTPException(status_code=404, detail=f"人格不存在: {persona_id}")
+        user_id = ensure_user(account, user_id)
         entries = repo.list_diary(persona_id, user_id, limit=limit)
         return {"persona_id": persona_id, "user_id": user_id,
                 "count": len(entries), "diary": [_diary_detail(e) for e in entries]}
@@ -1208,6 +1496,7 @@ def create_app(
         day: str,
         user_id: str,
         repo: Repository = Depends(get_repo),
+        account: Account | None = Depends(optional_actor),
     ) -> dict[str, Any]:
         """取某一天的日记。没有 → 404（「这天她没写」是明确事实，不是空壳）。
 
@@ -1224,7 +1513,7 @@ def create_app(
                 status_code=422, detail=f"日期格式非法: {day}（应为 YYYY-MM-DD）"
             ) from exc
 
-        entry = repo.get_diary(persona_id, user_id, target)
+        entry = repo.get_diary(persona_id, ensure_user(account, user_id), target)
         if entry is None:
             raise HTTPException(
                 status_code=404, detail=f"这一天还没有日记: {persona_id}/{user_id}/{day}"

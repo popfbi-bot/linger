@@ -1255,3 +1255,76 @@ body {
   opacity: 1;
   text-decoration: underline;
 }
+
+/* ───────────── 账号（M3-H） ───────────── */
+
+/* 顶栏里的一小块：匿名时只是一枚灰标签 + 「登录」，登录后变成绿色的「已登录」。 */
+.account-box { display: flex; align-items: center; gap: 8px; }
+
+.pill-anon {
+  color: var(--muted);
+  border-color: var(--border);
+  background: var(--surface-soft);
+}
+
+.pill-account {
+  color: #2f6b46;
+  border-color: #cfe3d6;
+  background: #f2f9f4;
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 浮层：低对比、无遮罩全黑，像一张放到桌面上的卡片 */
+.auth-panel {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(43, 40, 35, .18);
+  z-index: 50;
+}
+
+.auth-panel[hidden] { display: none; }
+
+.auth-card {
+  width: min(360px, calc(100vw - 32px));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px 20px 16px;
+}
+
+.auth-card h2 { margin: 0 0 6px; font-size: 17px; }
+
+.auth-field { display: block; margin: 12px 0; }
+.auth-field span { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+.auth-field input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--text);
+  font: inherit;
+}
+
+.auth-field input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+
+.auth-actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+
+.auth-error {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: #a33;
+  background: #fdf3f3;
+  border: 1px solid #eccfcf;
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+}
+
+.auth-error[hidden] { display: none; }
