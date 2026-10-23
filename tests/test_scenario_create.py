@@ -18,15 +18,8 @@ from __future__ import annotations
 import pytest
 
 # 夹具 repo / persona / client 见 conftest.py
-
-
-@pytest.fixture(autouse=True)
-def scenario_dir(tmp_path, monkeypatch):
-    """把用户场景目录指到临时目录，避免污染真实的 ~/.linger。"""
-    target = tmp_path / "scenarios"
-    monkeypatch.setenv("LINGER_SCENARIO_DIR", str(target))
-    return target
-
+# scenario_dir 也在 conftest.py（autouse，M3-G 测试隔离修复）——这里不再重复定义，
+# 否则本文件的局部定义会覆盖全局的，其它文件依旧不隔离。
 
 BODY = {
     "id": "rainy_roof",
@@ -146,22 +139,31 @@ def test_builtin_scenario_cannot_be_deleted(client):
 
 
 # --------------------------------------------------------------------------- #
-# 5. 用户场景覆盖同名内置场景
+# 5. 影子覆盖机制（读取侧）：用户目录的同 id 文件优先，列表只出现一次
 # --------------------------------------------------------------------------- #
 def test_user_scenario_overrides_builtin_same_id(client, scenario_dir):
-    """同 id 时用户版本优先——用户改过的场景应该生效，且列表里只出现一次。"""
+    """同 id 时用户版本优先——用户改过的场景应该生效，且列表里只出现一次。
+
+    M3-G 语义变更说明（本窗口授权改这条断言）：
+    旧版用 `POST + overwrite: true` 造影子——那正是 M3-G 禁止的
+    「接口主动覆盖内置场景」。**读取侧的影子机制原样保留**：
+    手工把同 id 文件放进用户目录（历史遗留 / 手改 / git 同步），
+    loader 读用户版。接口不造影子，机制不消失——两条都要有人钉。
+    """
     builtin = client.get("/v1/scenarios").json()["scenarios"]
     assert builtin
     target_id = builtin[0]["id"]
 
-    client.post(
-        "/v1/scenarios",
-        json={"id": target_id, "title": "我的改名版", "overwrite": True},
+    # 绕过 POST，直接写文件（这就是「手工影子」的形态）
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    (scenario_dir / f"{target_id}.yaml").write_text(
+        f"id: {target_id}\ntitle: 手工影子版\nsetting: 测试\n", encoding="utf-8"
     )
-
-    detail = client.get(f"/v1/scenarios/{target_id}").json()
-    assert detail["title"] == "我的改名版"
 
     listed = [s for s in client.get("/v1/scenarios").json()["scenarios"] if s["id"] == target_id]
     assert len(listed) == 1, "同 id 在列表里只能出现一次"
-    assert listed[0]["title"] == "我的改名版"
+    assert listed[0]["title"] == "手工影子版"
+    assert listed[0]["source"] == "user", "躺在用户目录里，来源就是 user"
+
+    detail = client.get(f"/v1/scenarios/{target_id}").json()
+    assert detail["title"] == "手工影子版", "详情也必须读到用户版"

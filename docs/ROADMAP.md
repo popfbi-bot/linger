@@ -120,7 +120,18 @@
   #31 场景编辑 → #32 PostgreSQL Repository → #33 账号体系 → #34 人格市场
   （依赖 #33）→ #35 语音链路 → #36 成本看板 → #37 评测入 CI（依赖 #30）。
   每个 issue 正文都写明「收到开工指令才动手」，避免多棒并行互相踩分支。
-- 🔴 **2026-10-23 晨：七棒全部卡在同一处——NPC 的 token 没有 `repo-code:rw`**。
+- ✅ **M3-G 场景编辑完成**（2026-10-23，issue #31 已关闭，commit `234b428`）：
+  **由本窗口实现**——NPC 两轮写完但 patch 被评论转义毁掉（代码里 `join("\n")` 的
+  `\n` 字面量被反转义成真换行，hunk 行数对不上），自动修复三轮后撞上不可判定的
+  三引号字符串模式，主动停手，按判据自行实现（M3-A 先例）。
+  交付：`loader._source_of()` 按文件实际目录判来源、`GET` 详情带 `source`、
+  编辑入口只给用户场景（前端双方向变异都验过）、内置拦截只拦新造影子、
+  编辑沿用原 id 保进度、影子机制双钉条、`scenario_dir` fixture 上移 conftest
+  autouse（修「全量红单独绿」的隔离问题）。
+  全量 **685 passed**（666 + 19），变异 4 方向全红。
+  NPC 的设计决策（评论里确认过的）全部采纳，commit 描述里致谢。
+  **⇒ 后续 NPC 交付一律 base64**；自动修 patch 的尝试与止损理由记在
+  工作区 `fix_patch2.py` 与 issue #31 关闭说明里。
   #31 的 NPC 已写完代码、全绿（它自报 693~695 passed）、变异 5 条全红，
   但 `git push` 403、`cnb git create-branch` 403（errcode 10023），
   **连建空分支都不行**。`CNB_NPC_ENABLE_WORKMODE=false` 是本机账号侧开关，NPC 开不了。
@@ -133,6 +144,8 @@
   ⚠️ **附件下载走不通**：NPC 给的 `/-/files/issues/...` 链接，
   直连 404、Bearer 400(`Invalid argument`)、`cnb issues get-issue-files` 404。
   **只能贴评论，不能用附件。**
+- ✅ **#31 闭环（见上 M3-G 完成条目）后，#32（PostgreSQL Repository）已发开工指令**
+  （2026-10-23），交付纪律（base64 / 别试推送 / 别用附件）写进了开工评论。
 - 🔴 **分片贴 patch 会被转义破坏（2026-10-23 上午实测）**：
   NPC 把 1071 行 patch 分 4 片贴进评论，拼接成功但 `git am` 报
   `corrupt patch at line 224`。根因：代码里的 `join("\n")`，

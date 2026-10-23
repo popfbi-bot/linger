@@ -52,6 +52,25 @@ def real_embedder() -> HashEmbedder:
 # --------------------------------------------------------------------------- #
 # HTTP 客户端（test_api.py 与 test_frontend.py 共用）
 # --------------------------------------------------------------------------- #
+@pytest.fixture(autouse=True)
+def scenario_dir(tmp_path, monkeypatch):
+    """把用户场景目录钉到临时目录——**对所有测试生效**（M3-G 测试隔离修复）。
+
+    为什么放 conftest 且 autouse：原先这个 fixture 只在 test_scenario_create.py
+    里，其它走到 `POST /v1/scenarios` 的用例（如 test_scenario.py 的节拍推进）
+    会写进**真实的** `~/.linger/`——全量跑红、单独跑绿，因为顺序不同目录脏净不同。
+    这个坑的特征就是「隔离只做了一半」：新建测试的自己 setenv 了，
+    没意识到别的用例也在用同一个全局目录。
+
+    目录**建好再返回**：save_scenario() 会自己 mkdir，但「手工放影子文件」
+    这类绕过 API 直接写文件的测试也需要它，统一在这里建省得每个测试自己来。
+    """
+    target = tmp_path / "scenarios"
+    target.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("LINGER_SCENARIO_DIR", str(target))
+    return target
+
+
 @pytest.fixture
 def client(repo: SQLiteRepository, persona: PersonaCard):
     """带临时 SQLite 的测试客户端。

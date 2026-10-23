@@ -1237,3 +1237,21 @@ body {
   color: var(--muted, #9a9187);
   margin: 0;
 }
+
+/* ───────────── 场景编辑入口（M3-G） ───────────── */
+
+.scenario-edit {
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 6px;
+  padding: 1px 7px;
+  margin-left: 6px;
+  cursor: pointer;
+  opacity: .85;
+}
+
+.scenario-edit:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
