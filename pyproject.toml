@@ -26,6 +26,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6"]
+# 可选后端：只有用 LINGER_STORAGE=postgres 的人需要它。
+# 刻意不放进主依赖——替一个后端装一整套驱动，是给所有部署加税。
+postgres = ["psycopg[binary,pool]>=3.1"]
 
 [project.scripts]
 linger = "linger.server.app:main"
