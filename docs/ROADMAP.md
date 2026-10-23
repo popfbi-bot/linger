@@ -231,6 +231,19 @@
   **这句话对日记不成立**，已要求 NPC 改文档。
   要真搬移需给 `Repository` 加 `delete_diary`（契约变更，要动 30 方法 × 2 实现，
   会破坏 #32 刚验收的 PG 前提）⇒ **记为后续项**，等 Repository 契约本来就要动时一起加。
+- ⚠️ **本地绿 ≠ CI 绿：CI 跑 Python 3.11，本地是 3.13（每棒交付后必查）**：
+  `.cnb.yml` 用 `python:3.11-slim`，本地是 3.13.12——**本地跑绿不代表 CI 跑绿**。
+  已用 `ast.parse(feature_version=(3, 11))` 全仓扫过（src + tests）：**3.10/3.11 均语法兼容**，
+  且未使用 `datetime.UTC` / `itertools.batched` / `typing.override` 等 3.12+ 专有 API。
+  **检查脚本留在工作区**（一行 `ast.parse(..., feature_version=(3,11))` 扫全仓即可）。
+  ⚠️ **语法兼容 ≠ 运行兼容**：3.11 与 3.13 的标准库行为差异仍可能咬人，
+  每棒交付后要把这个检查跑一遍。
+- ⚠️ **部署注意：密码哈希依赖 OpenSSL 的 scrypt**：
+  `accounts/security.py` 用 `hashlib.scrypt`（标准库，issue 不许引 bcrypt/argon2）。
+  但 **OpenSSL 不支持 scrypt 的环境会抛 `ValueError`**（某些精简 Linux 镜像），
+  当前实现**没有 fallback**。
+  CI 环境（Debian + OpenSSL 3.x）不受影响 ⇒ 不是 CI 风险，是**部署风险**。
+  记为后续项：部署文档里写明「需 OpenSSL ≥ 1.1.1」，或加 pbkdf2 fallback。
 - ✅ **端到端多轮验收完成**（2026-10-23 晨，真模型 + 真实服务器，非 TestClient）：
   起 `serve_ds.py` 连跑四轮深度倾诉，**回复质量与状态联动全部正常**——
   陪伴档案跨轮累积（中年期保持、角色 1→2 个）、
@@ -267,7 +280,7 @@
 | 项 | 状态 |
 |---|---|
 | 多模型路由与降级 | ✅ | PR #27 已合并（超时/重试/降级/熔断） |
-| CI 护栏（push / PR 自动跑测试） | ✅ | PR #30 已合并，`.cnb.yml` 在 main 上 |
+| CI 护栏（push / PR 自动跑测试） | ✅ | PR #30 已合并，`.cnb.yml` 在 main 上；**CI 跑 Python 3.11，本地是 3.13** |
 | **语音链路（ASR/TTS + 情绪韵律）** | 🚧 已派工 #35（第 5 棒） | `grep -ri "asr\|tts" src/` 为空，从零开始 |
 | **人格市场（上传/审核/分发）** | 🔨 已开工 #34（第 4 棒，2026-10-23 14:00 发指令） | 依赖 #33 账号体系（已落地）；红线：`cloned` 不许上架 |
 | **评测自动化接入 CI** | 🚧 已派工 #37（第 7 棒） | 依赖 CI（已合）；核心是「证明它真的会拦」 |
