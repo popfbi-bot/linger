@@ -47,3 +47,59 @@ class FakeLLM:
         self.prompts.append(system)
         for i in range(0, len(self.reply), 2):
             yield self.reply[i : i + 2]
+
+
+class RecordingTTS:
+    """把收到的参数原样记下来的假 TTS——判据 4/5 唯一可断言的证据。
+
+    为什么不看返回的音频字节：编码器加点噪声字节就变了，两条请求的字节不同
+    说明不了「韵律真的变了」。参数才是契约。
+    """
+
+    name = "fake-tts"
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def synthesize(self, text, *, voice=None, prosody=None):
+        self.calls.append({"text": text, "voice": dict(voice or {}), "prosody": dict(prosody or {})})
+        # 结构合法的 WAV 头（44 字节）+ 一点载荷：判据 3 要看的是「能不能播」
+        from linger.voice.mock import _wav
+
+        return _wav(b"\x00" * 16)
+
+
+class RecordingASR:
+    """确定性、且**与输入相关**的假 ASR。
+
+    同一段音频 → 同一句（可复现）；不同长度 → 不同长度（证明它真读了字节）。
+    """
+
+    name = "fake-asr"
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def transcribe(self, audio, *, language=None):
+        self.calls.append({"bytes": len(audio or b""), "language": language})
+        return "字" * max(1, len(audio or b"") // 10)
+
+
+class BrokenASR:
+    """provider 挂了 → 必须是 503，不是 500（判据 2 的另一面）。"""
+
+    name = "broken-asr"
+
+    def transcribe(self, audio, *, language=None):
+        from linger.voice import VoiceError
+
+        raise VoiceError("ASR 后端不可用")
+
+
+class BrokenTTS:
+    name = "broken-tts"
+
+    def synthesize(self, text, *, voice=None, prosody=None):
+        from linger.voice import VoiceError
+
+        raise VoiceError("TTS 后端不可用")

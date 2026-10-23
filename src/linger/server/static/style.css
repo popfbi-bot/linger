@@ -897,6 +897,65 @@ body {
 }
 .composer textarea:disabled { opacity: .55; cursor: not-allowed; }
 
+/* ── 语音（M4-C） ──────────────────────────────────────────────
+   麦克风按钮与「播放」入口刻意做得很轻：语音是**多一个入口**，不是
+   把打字换成说话。打字永远还能用，所以这两样不该抢视觉重心。 */
+.btn-mic {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.btn-mic:hover:not(:disabled) { border-color: var(--accent); }
+.btn-mic:disabled { opacity: .45; cursor: not-allowed; }
+.btn-mic .mic-icon { font-size: 10px; line-height: 1; color: var(--accent); }
+/* 录音中：呼吸式高亮。它同时是「正在录」的唯一提示——
+   用户不可能靠声音判断自己有没有被录（浏览器不放监听）。 */
+.btn-mic.is-recording {
+  border-color: var(--accent);
+  background: var(--accent-soft, rgba(160, 120, 90, .12));
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+.btn-mic.is-recording .mic-icon { color: #c0392b; }
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(192, 57, 43, .35); }
+  50% { box-shadow: 0 0 0 6px rgba(192, 57, 43, 0); }
+}
+
+.voice-status {
+  flex: 0 0 auto;
+  padding: 4px 16px 10px;
+  font-size: 12px;
+  color: var(--muted, #8a8178);
+}
+.voice-status.is-error { color: #c0392b; }
+
+/* AI 气泡上的「播放」。放在气泡右下角，小到不打扰阅读。 */
+.msg-play {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted, #8a8178);
+  cursor: pointer;
+}
+.msg-play:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+.msg-play:disabled { opacity: .5; cursor: not-allowed; }
+
 .btn-primary {
   flex: 0 0 auto;
   font: inherit;

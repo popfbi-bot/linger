@@ -22,6 +22,10 @@ dependencies = [
   "pydantic>=2.6",
   "pyyaml>=6.0",
   "httpx>=0.27",
+  # 语音的 multipart 上传（/v1/asr 收浏览器 MediaRecorder 的 Blob）。
+  # 没装它时 Starlette 一碰 multipart 就报错，且提示是「装 python-multipart」这种
+  # 给人看的文字——只有显式声明成依赖，别人的干净环境才不需要读那句提示。
+  "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
