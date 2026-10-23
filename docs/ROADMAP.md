@@ -261,6 +261,29 @@
   ⚠️ **验收方修正一处**：NPC 越界改了 `docs/ROADMAP.md`（issue 明令别动 docs），
   合并时摘出，本章由本窗口重写——**文档归一窗口管**，否则两处各写一份必然漂移。
   #35 语音链路、#36 成本看板、#37 评测入 CI、#38 事件评估换小模型继续排队。
+- ✅ **#35 语音链路验收通过并合并（2026-10-23，merge `4945b86`）**：
+  听（`POST /v1/asr`）+ 说（`POST /v1/tts`）+ 情绪韵律（PAD → rate/pitch/energy）。
+  交付照 #34 的 bundle 协议，**这次补齐了 sha256 双锚点**（base64 文本 + 解码字节）
+  与回读核对：bundle `d07225d5…`（39970B）、patch `fdb107b0…`（97928B），
+  我这边拼接后逐字节一致，`git bundle verify` is okay。
+  验收：全量 **884（875 passed / 9 skipped / 0 failed）**，基线 836，+48；
+  我的独立复现 **HTTP 24/24**（两种信封等价、空/坏/非音频全 422、
+  高低 arousal 的 rate 1.23 vs 0.78 方向对、register 透传、cadence 随句长变、
+  cloned 卡 403、SSE 序列不变且 ASR/TTS 零调用）+ **DOM 18/18**
+  （点麦克风真发 multipart 且不手写 Content-Type、结果进输入框不自动发、
+  轨道真停、播放按钮带 persona_id+user_id、不支持录音时按钮 disabled 而文字输入照旧）。
+  变异双向：`prosody_for` 写死 → 我 2 红 + NPC 2 failures，还原复绿。
+  **设计亮点**：mock 有确定性的输入相关性（不是恒返回一句）；mock WAV 是结构合法的
+  真 WAV（前端 `Audio` 能解）；`X-Prosody-*` 响应头把韵律变成可观测事实；
+  两种请求信封（multipart / base64）在入口合并成同一条字节流。
+  ⚠️ **验收方修正一处（重要）**：`test_default_path_never_touches_network`
+  把 `socket.socket` **类本身**换成 boom，在 Windows 上必挂——
+  ProactorEventLoop 在 `asyncio/windows_events.py` 里做
+  `isinstance(conn, socket.socket)`，类变函数后抛 TypeError，而这异常发生在
+  recv 回调里 → **事件循环静默失效、请求永不返回**。表现不是「测试红」，
+  是「全量卡在 97% 不动」（实测挂死 13 分钟）。CI 是 Linux 所以一直绿。
+  修法：只掐 `create_connection` / `getaddrinfo` / `socket.connect` / `connect_ex`。
+  并验证没削软：往 `MockASR.transcribe` 注入真 `create_connection` → 秒红。
 - ✅ **#33 账号体系验收通过并合并（2026-10-23，merge `5902f98`）**：
   交付用 **sha256 锚点**——NPC 贴了 14 段（中途被平台截断、丢 4 字符、自己手滑
   把一个 `E` 打成 `Q`，全部只有回读比对能抓到），但给出
@@ -331,7 +354,7 @@
 |---|---|
 | 多模型路由与降级 | ✅ | PR #27 已合并（超时/重试/降级/熔断） |
 | CI 护栏（push / PR 自动跑测试） | ✅ | PR #30 已合并，`.cnb.yml` 在 main 上；**CI 跑 Python 3.11，本地是 3.13** |
-| **语音链路（ASR/TTS + 情绪韵律）** | 🚧 已派工 #35（第 5 棒） | `grep -ri "asr\|tts" src/` 为空，从零开始 |
+| **语音链路（ASR/TTS + 情绪韵律）** | ✅ #35 已完成（merge `4945b86`） | 协议+mock+按配置选；韵律断言参数不断言字节；cloned 卡 403；884 tests |
 | **人格市场（上传/审核/分发）** | ✅ #34 后端（merge `3de810b`）+ #39 前端（merge `2da3723`） | 红线 `cloned` 不许上架钉死（变异 5 红）；前端补「点得到、上架得了」，836 passed |
 | **评测自动化接入 CI** | 🚧 已派工 #37（第 7 棒） | 依赖 CI（已合）；核心是「证明它真的会拦」 |
 | **成本看板与灰度** | 🚧 已派工 #36（第 6 棒） | 现在零计量，`grep tokens` 只有一处请求参数 |
