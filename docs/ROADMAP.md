@@ -160,6 +160,24 @@
   **规矩**：标题只表达**做什么**；排队关系、依赖关系写在评论与正文里，
   不塞标题。以后新派工的 issue 标题形如 `M4-B：事件评估换成小模型`，
   不带棒次、不带 issue 编号。
+- 🔴 **提交推到了错误分支（2026-10-23 上午，M3-G 差点丢）**：
+  实现 M3-G 时 HEAD 停在临时分支 `_fixcheck2` 上，`git commit` 与 `git push`
+  都作用在**当前分支**，导致 `234b428` / `60a8478` 只进了 `_fixcheck2`，
+  **origin/main 一直没有 M3-G**。当时汇报「已推 main」是错的——
+  **push 返回成功 ≠ 推到了 main**。
+  **铁律**：① 提交前先 `git checkout main` 并确认 `git branch --show-current`；
+  ② 推送后必须 `git fetch` 再 `git merge-base --is-ancestor <sha> origin/main`
+  回查，不采信 push 的返回信息；③ 任何「已完成」都要在**接收端**确认。
+  **本次补救**：`git merge --no-ff _fixcheck2` 合回 main 并重推（`80e4f71`），
+  已回查 `234b428` 在 origin/main。
+- 🔴 **NPC 交付的 base64 patch 仍可能缺文件（2026-10-23，#32 第一棒）**：
+  NPC 用 base64 分 4 段贴 patch，但第 1 段**内容损坏**（解码出二进制乱码，
+  长度不是 4 的倍数），且 **`postgres.py` 整个文件不在 patch 里**——
+  commit message 有 `create mode postgres.py`，正文却没有该文件 diff。
+  已要求重交，改用**逐文件贴完整内容**（Plan C），不走 patch。
+  **教训**：base64 解决转义问题，但解决不了「文件漏贴」；
+  收到 base64 patch 后先核对 commit message 的文件清单与实际 diff 是否一致，
+  再进入验收。
 - ✅ **端到端多轮验收完成**（2026-10-23 晨，真模型 + 真实服务器，非 TestClient）：
   起 `serve_ds.py` 连跑四轮深度倾诉，**回复质量与状态联动全部正常**——
   陪伴档案跨轮累积（中年期保持、角色 1→2 个）、
