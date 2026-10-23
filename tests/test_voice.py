@@ -352,14 +352,29 @@ def test_two_personas_get_different_voice_params(repo, voice_app):
 # 判据 6：免密钥免网络 + 降级可观测
 # =========================================================================== #
 def test_default_path_never_touches_network(mock_app, monkeypatch):
-    """默认配置下整条链路不联网：DNS/socket 全被掐，照样 200。"""
+    """默认配置下整条链路不联网：DNS 与连接入口全被掐，照样 200。
+
+    **不能把 `socket.socket` 这个类本身替换掉**（验收方修正，2026-10-23）：
+    Windows 的 `ProactorEventLoop` 在 `asyncio/windows_events.py` 里会对收到的
+    连接做 `isinstance(conn, socket.socket)`。类被换成函数后那里抛
+    `TypeError: isinstance() arg 2 must be a type`，而这个异常发生在事件循环的
+    recv 回调里——事件循环就此静默失效，请求**永远不返回**。
+    表现不是「测试红」，而是「全量测试卡在 97% 不动」（本机实测挂死 13 分钟）。
+    Linux 的 selector 事件循环不走那条 isinstance，所以 CI 绿、Windows 挂。
+
+    只掐「发起连接」的入口（`create_connection` / `getaddrinfo` /
+    `socket.connect` / `connect_ex`），类型本身保持原样：
+    任何真实外连都会 boom，而事件循环照常工作。
+    """
     import socket
 
     def boom(*_a, **_kw):
         raise AssertionError("语音链路试图联网")
 
-    monkeypatch.setattr(socket, "socket", boom)
     monkeypatch.setattr(socket, "create_connection", boom)
+    monkeypatch.setattr(socket, "getaddrinfo", boom)
+    monkeypatch.setattr(socket.socket, "connect", boom)
+    monkeypatch.setattr(socket.socket, "connect_ex", boom)
 
     c = mock_app["client"]
     pid = mock_app["persona"].id
