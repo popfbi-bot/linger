@@ -49,8 +49,8 @@ from ..models import CompanionProfile, DiaryEntry, MemoryEditRecord, PersonaCard
 from ..orchestrator import Orchestrator
 from ..persona.generator import PersonaGenerateError, generate_persona
 from ..persona.wizard import PersonaWizardError, preview_draft
+from ..storage import get_repository
 from ..storage.base import Repository
-from ..storage.sqlite import SQLiteRepository
 
 # 记忆正文长度上限：提炼后的短句，500 字足够容纳「我妈妈下周要去医院复查」这类口径。
 MEMORY_CONTENT_MAX = 500
@@ -569,9 +569,12 @@ def create_app(
             yield
             return
 
-        path = db_path or settings.db_path
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        own_repo = SQLiteRepository(path)
+        # 后端由配置决定（sqlite / postgres），这里不认识具体实现——
+        # 业务层一旦 import 了某个具体 Repository，换存储就得改业务代码（判据 8）。
+        # db_path 只在 sqlite 后端有意义，故只在显式传入时覆盖配置。
+        if db_path is not None:
+            settings.db_path = Path(db_path)
+        own_repo = get_repository()
         app.state.repo = own_repo
         app.state.embedder = embedder or get_embedder(
             settings.embedder, settings.embedding_dim

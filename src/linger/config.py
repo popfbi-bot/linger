@@ -47,6 +47,9 @@ class Settings:
     db_path: Path = field(
         default_factory=lambda: Path(_env("LINGER_DB_PATH", "./data/linger.db"))
     )
+    # postgres 后端的连接串。只在 LINGER_STORAGE=postgres 时被用到，
+    # 所以默认空串不报错——没配 PG 的人不该被一个用不上的字段拦住。
+    pg_dsn: str = field(default_factory=lambda: _env("LINGER_PG_DSN"))
 
     # 嵌入
     embedder: str = field(default_factory=lambda: _env("LINGER_EMBEDDER", "hash"))
