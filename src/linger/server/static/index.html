@@ -15,10 +15,41 @@
     <span class="muted">Linger · 状态引擎</span>
   </div>
   <div class="topbar-right">
+    <!-- 账号（M3-H）。默认收起成一枚按钮：**不弹登录墙**（判据 8）——
+         没登录的人看到的还是原来那个顶栏，只是多了一个「登录」选项。 -->
+    <div id="account-box" class="account-box">
+      <span id="account-state" class="pill pill-anon">未登录 · 数据在本机</span>
+      <button id="btn-show-auth" class="btn-ghost">登录</button>
+      <button id="btn-logout" class="btn-ghost" hidden>退出</button>
+    </div>
     <span id="conn-state" class="pill pill-idle">未连接</span>
     <button id="btn-reset" class="btn-ghost" title="重新开始一个会话">重开</button>
   </div>
 </header>
+
+<!-- 登录 / 注册浮层。两种模式共用一个面板：邮箱密码两个字段完全一样，
+     多说一句「你是注册还是登录」只是多一次点击。 -->
+<div id="auth-panel" class="auth-panel" hidden>
+  <div class="auth-card">
+    <h2 id="auth-title">登录</h2>
+    <p class="hint" id="auth-hint">登录后，换设备也能找回你和她们聊过的事。</p>
+    <label class="auth-field">
+      <span>邮箱</span>
+      <input id="auth-email" type="email" autocomplete="email" placeholder="you@example.com">
+    </label>
+    <label class="auth-field">
+      <span>密码</span>
+      <input id="auth-password" type="password" autocomplete="current-password" placeholder="至少 8 位">
+    </label>
+    <div class="auth-actions">
+      <button id="btn-auth-submit" class="btn-secondary">登录</button>
+      <button id="btn-auth-switch" class="btn-ghost">没有账号？注册</button>
+      <button id="btn-auth-close" class="btn-ghost">取消</button>
+    </div>
+    <p id="auth-error" class="auth-error" hidden></p>
+    <p id="auth-claim-hint" class="hint" hidden></p>
+  </div>
+</div>
 
 <main class="layout">
 

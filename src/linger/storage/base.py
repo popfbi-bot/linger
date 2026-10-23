@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from datetime import date
 from typing import Any
 
+from ..accounts.models import Account
 from ..models import (
     AffectState,
     CompanionProfile,
@@ -204,6 +205,55 @@ class Repository(ABC):
 
         用户隔离是硬要求：日记按 `(persona_id, user_id)` 过滤，
         `u_a` 的心事不能被 `u_b` 读到。
+        """
+
+    # ---- 账号（M3-H） -------------------------------------------------- #
+    @abstractmethod
+    def create_account(
+        self, email: str, user_id: str, password_hash: str, display_name: str = ""
+    ) -> Account | None:
+        """建账号。邮箱已存在 → **返回 None**（不抛异常、不覆盖）。
+
+        为什么不抛：唯一性判定必须由存储层在一个原子动作里完成
+        （`INSERT ... ON CONFLICT DO NOTHING` / `UNIQUE` 约束）。
+        先 `find` 再 `insert` 的写法在并发下会写出两个同邮箱账号，
+        而「同邮箱重复注册 → 409」（判据 1）就成了运气问题。
+        所以唯一性只认存储层的返回值，不认调用方的事前查询。
+
+        `user_id` 由调用方（`accounts.service`）生成并传入：
+        它是账号的**稳定身份**，所有记忆都挂在它下面，不能由存储层随机发号。
+        """
+
+    @abstractmethod
+    def find_account(self, email: str) -> dict[str, Any] | None:
+        """按邮箱取账号**含密码哈希**的完整行；不存在返回 None。
+
+        **这个方法只给认证路径用**。它返回 dict 而不是 `Account`，
+        是为了让「哈希与盐」这件事在类型上就显眼——`Account` 里没有密码字段，
+        业务层随手拿到一个 Account 也就随手拿到了「可以安全序列化的东西」。
+        想拿哈希，必须显式走这个有名字的方法。
+
+        登录失败时，调用方会拿 None 分支去烧一次假哈希（恒定时间），
+        见 `accounts.security.dummy_verify`。
+        """
+
+    @abstractmethod
+    def account_exists(self, user_id: str) -> bool:
+        """这个 user_id 是否已经是某个账号？
+
+        认领接口靠它挡住一类劫持：`user_id` 是前端随便写的字符串，
+        如果只按字符串匹配就搬会话，那么「恰好用了别人的 user_id」
+        就能把另一个账号的会话搬到自己名下。这里查一次，命中就跳过。
+        """
+
+    @abstractmethod
+    def list_users_for_persona(self, persona_id: str) -> list[str]:
+        """某个人格下**所有** user_id，按最近活跃倒序。
+
+        认领接口要回答「这台设备匿名期间跟谁聊过」，而 turn 只挂在 session 上、
+        turn 表没有 user_id 列。所以从 session 表聚合是唯一现成的路径。
+        按 last_activity 倒序：参与排序的字段必须被索引（PG 侧会建），
+        否则个人格下的全表扫会随日记增长变慢。
         """
 
     # ---- 回溯 ---------------------------------------------------------- #

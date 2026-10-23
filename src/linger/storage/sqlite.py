@@ -13,6 +13,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..accounts.models import Account
 from ..models import (
     PAD,
     AffectState,
@@ -122,6 +123,17 @@ CREATE TABLE IF NOT EXISTS diary_entry (
   UNIQUE (persona_id, user_id, date)
 );
 CREATE INDEX IF NOT EXISTS idx_diary_owner ON diary_entry (persona_id, user_id, date);
+-- 账号（M3-H）。email 是唯一键：`UNIQUE` 让「同邮箱注册两次」在存储层就撞墙，
+-- 不靠调用方的事前查询——那种写法在并发下会写出两个同邮箱账号。
+-- password_hash 是自描述串（scrypt$n$r$p$salt$hash），盐在里面，不单独建列。
+CREATE TABLE IF NOT EXISTS account (
+  user_id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  display_name TEXT,
+  token_epoch INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
 """
 
 
@@ -229,9 +241,17 @@ class SQLiteRepository(Repository):
 
     # ---- 会话 ---------------------------------------------------------- #
     def save_session(self, s: Session) -> None:
+        """upsert。冲突时连身份列一起改写，而不只是 last_active_at。
+
+        M3-H 的认领要把匿名会话改挂到账号名下，走的就是这条路：
+        只更新 last_active_at 会让 `s.user_id = ...; save_session(s)` 静默丢了改动——
+        调用方以为改成了，库里还是老 id，症状是「认领了但记忆还是空的」。
+        """
         self.conn.execute(
             "INSERT INTO session (id, persona_id, user_id, scenario_id, started_at, last_active_at) "
-            "VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET last_active_at=excluded.last_active_at",
+            "VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+            "user_id=excluded.user_id, scenario_id=excluded.scenario_id, "
+            "last_active_at=excluded.last_active_at",
             (s.id, s.persona_id, s.user_id, s.scenario_id, _dt(s.started_at), _dt(s.last_active_at)),
         )
         self.conn.commit()
@@ -529,6 +549,65 @@ class SQLiteRepository(Repository):
             (persona_id, user_id, limit),
         ).fetchall()
         return [self._row_to_diary(r) for r in rows]
+
+    # ---- 账号（M3-H） -------------------------------------------------- #
+    def create_account(
+        self, email: str, user_id: str, password_hash: str, display_name: str = ""
+    ) -> Account | None:
+        """邮箱已存在 → None。判唯一性靠 `ON CONFLICT DO NOTHING` + 行数。
+
+        为什么不先 SELECT 再 INSERT：两个并发注册请求会同时读到「不存在」，
+        然后都插进去——除非表上有 UNIQUE 且插入本身报冲突。
+        `rowcount == 0` 就是「被 UNIQUE 挡下了」，这是唯一可信的信号。
+        """
+        created = datetime.now(timezone.utc)
+        cur = self.conn.execute(
+            "INSERT INTO account (user_id, email, password_hash, display_name, token_epoch, created_at) "
+            "VALUES (?,?,?,?,?,?) ON CONFLICT (email) DO NOTHING",
+            (user_id, email, password_hash, display_name, 1, _dt(created)),
+        )
+        self.conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return Account(
+            email=email,
+            user_id=user_id,
+            display_name=display_name,
+            token_epoch=1,
+            created_at=created,
+        )
+
+    def find_account(self, email: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM account WHERE email=?", (email,)).fetchone()
+        if row is None:
+            return None
+        return {
+            "user_id": row["user_id"],
+            "email": row["email"],
+            "password_hash": row["password_hash"],
+            "display_name": row["display_name"] or "",
+            "token_epoch": int(row["token_epoch"] or 1),
+            "created_at": _pd(row["created_at"]) or datetime.now(timezone.utc),
+        }
+
+    def account_exists(self, user_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM account WHERE user_id=? LIMIT 1", (user_id,)
+        ).fetchone()
+        return row is not None
+
+    def list_users_for_persona(self, persona_id: str) -> list[str]:
+        """从 session 聚合：turn 表没有 user_id 列，会话是唯一现成的归属路径。
+
+        去重靠 GROUP BY，排序靠 MAX(last_active_at)——「最近还在用的人先出现」，
+        认领面板第一屏就能列到用户真正在意的那份匿名数据。
+        """
+        rows = self.conn.execute(
+            "SELECT user_id, MAX(last_active_at) AS seen FROM session "
+            "WHERE persona_id=? GROUP BY user_id ORDER BY seen DESC",
+            (persona_id,),
+        ).fetchall()
+        return [r["user_id"] for r in rows]
 
     # ---- 回溯 ---------------------------------------------------------- #
     def save_trace(self, trace: TraceRecord) -> None:

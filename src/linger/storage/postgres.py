@@ -25,6 +25,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..accounts.models import Account
 from ..models import (
     PAD,
     AffectState,
@@ -225,9 +226,11 @@ class PostgresRepository(Repository):
 
     # ---- 会话 ---------------------------------------------------------- #
     def save_session(self, s: Session) -> None:
+        """upsert。冲突时连身份列一起改写——认领靠这条路径改 `user_id`（同 SQLite 版）。"""
         self._run(
             "INSERT INTO session (id, persona_id, user_id, scenario_id, started_at, last_active_at) "
             "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO UPDATE SET "
+            "user_id=excluded.user_id, scenario_id=excluded.scenario_id, "
             "last_active_at=excluded.last_active_at",
             (
                 s.id,
@@ -625,6 +628,63 @@ class PostgresRepository(Repository):
             (persona_id, user_id, limit),
         )
         return [self._row_to_diary(r) for r in rows]
+
+    # ---- 账号（M3-H） -------------------------------------------------- #
+    def create_account(
+        self, email: str, user_id: str, password_hash: str, display_name: str = ""
+    ) -> Account | None:
+        """邮箱已存在 → None。
+
+        `ON CONFLICT (email) DO NOTHING` + `RETURNING user_id`：
+        有返行就是插入成功，没返行就是被 UNIQUE 挡下。
+        注意**不能**用 `ON CONFLICT (user_id)`——user_id 是随机生成的，
+        撞它的概率可以忽略，但真撞上时正确的行为是报错而不是「静默当作邮箱重复」。
+        """
+        created = datetime.now(timezone.utc)
+        rows = self._run(
+            "INSERT INTO account (user_id, email, password_hash, display_name, token_epoch, created_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (email) DO NOTHING RETURNING user_id",
+            (user_id, email, password_hash, display_name, 1, _aware(created)),
+        )
+        if not rows:
+            return None
+        return Account(
+            email=email,
+            user_id=user_id,
+            display_name=display_name,
+            token_epoch=1,
+            created_at=created,
+        )
+
+    def find_account(self, email: str) -> dict[str, Any] | None:
+        row = self._one("SELECT * FROM account WHERE email=%s", (email,))
+        if row is None:
+            return None
+        return {
+            "user_id": row["user_id"],
+            "email": row["email"],
+            "password_hash": row["password_hash"],
+            "display_name": row["display_name"] or "",
+            "token_epoch": int(row["token_epoch"] or 1),
+            "created_at": row["created_at"] or datetime.now(timezone.utc),
+        }
+
+    def account_exists(self, user_id: str) -> bool:
+        row = self._one("SELECT 1 AS hit FROM account WHERE user_id=%s LIMIT 1", (user_id,))
+        return row is not None
+
+    def list_users_for_persona(self, persona_id: str) -> list[str]:
+        """从 session 聚合。`idx_session_owner` 是 (persona_id, user_id, last_active_at DESC)，
+        而这里要按 user_id 分组再按活跃时间排——索引帮不上忙，
+        但一个人格下的会话数量是「人 × 会话数」的量级，可接受。
+        真到需要时再加 `(persona_id, user_id, last_active_at)` 上的覆盖查询。
+        """
+        rows = self._run(
+            "SELECT user_id, MAX(last_active_at) AS seen FROM session "
+            "WHERE persona_id=%s GROUP BY user_id ORDER BY seen DESC",
+            (persona_id,),
+        )
+        return [r["user_id"] for r in rows]
 
     # ---- 回溯 ---------------------------------------------------------- #
     def save_trace(self, trace: TraceRecord) -> None:

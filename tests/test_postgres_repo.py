@@ -220,7 +220,7 @@ def test_schema_tables_match_sqlite() -> None:
     lite_tables = _tables(_SCHEMA)
     assert pg_tables - lite_tables == set(), f"PG 多出来的表：{sorted(pg_tables - lite_tables)}"
     assert lite_tables - pg_tables == set(), f"PG 缺的表：{sorted(lite_tables - pg_tables)}"
-    assert len(pg_tables) == 11, f"表数应是 11，实际 {len(pg_tables)}"
+    assert len(pg_tables) == 12, f"表数应是 12，实际 {len(pg_tables)}"
 
 
 def test_schema_has_no_placeholders_and_uses_timestamptz() -> None:
@@ -240,7 +240,11 @@ def test_diary_schema_keeps_daily_unique_key() -> None:
 
 
 def test_missing_table_is_detected() -> None:
-    """判据 4 的变异：删掉一张表的建表语句，集合比对必须报出来。"""
+    """判据 4 的变异：删掉一张表的建表语句，集合比对必须报出来。
+
+    M3-H 起表数是 12（多一张 account），这条断言随 schema 增长而更新——
+    它的价值不在「数字是几」，而在「有人悄悄增删表时必须有人改这里」。
+    """
     from linger.storage.sqlite import _SCHEMA
 
     text = PG_SQL.read_text(encoding="utf-8")

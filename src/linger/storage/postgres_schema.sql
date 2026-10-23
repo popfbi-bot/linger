@@ -1,6 +1,6 @@
 -- PostgreSQL schema（架构 §4.2 的落地版）。
 --
--- 与 sqlite.py 的 _SCHEMA 表名集合一一对应：11 张表，不多不少。
+-- 与 sqlite.py 的 _SCHEMA 表名集合一一对应：12 张表，不多不少。
 -- 「换存储，不重构」——所以字段与语义照抄 SQLite 版，只在类型上换成 PG 的写法：
 --   * 结构化字段（entities / embedding / emotion / card / payload …）用 JSONB，
 --     JSONB 列才是「真 JSON」：PG 会校验格式，也能被 `->>` / `@>` 直接查询。
@@ -142,3 +142,15 @@ CREATE TABLE IF NOT EXISTS diary_entry (
   UNIQUE (persona_id, user_id, date)
 );
 CREATE INDEX IF NOT EXISTS idx_diary_owner ON diary_entry (persona_id, user_id, date);
+
+-- 账号（M3-H）。email 的 UNIQUE 就是「同邮箱重复注册 → 409」的落地：
+-- 唯一性判定必须在一个原子动作里完成，先查再插在并发下会写出两个同邮箱账号。
+-- `idx_account_email` 不额外建：UNIQUE 约束在 PG 里自带唯一索引。
+CREATE TABLE IF NOT EXISTS account (
+  user_id       TEXT PRIMARY KEY,
+  email         TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  display_name  TEXT,
+  token_epoch   INTEGER NOT NULL DEFAULT 1,
+  created_at    TIMESTAMPTZ NOT NULL
+);
