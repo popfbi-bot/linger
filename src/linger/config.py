@@ -78,6 +78,13 @@ class Settings:
         default_factory=lambda: _env_float("LINGER_LLM_BREAKER_COOLDOWN", 60.0)
     )
 
+    # 事件评估（#38）：判断「这一轮算什么、走不走心」。
+    # `mock`/`rule` = 纯规则，**零网络**（默认，CI 与免密钥环境走这条）；
+    # `openai` 等 = 按名字造 provider；`same` = 跟对话用同一个。
+    # 刻意与 `LLM` 分开：判 bool 的小模型不该跟对话抢配额，也不该共用熔断状态。
+    eval_provider: str = field(default_factory=lambda: _env("LINGER_EVAL_LLM", "mock"))
+    eval_timeout: float = field(default_factory=lambda: _env_float("LINGER_EVAL_TIMEOUT", 3.0))
+
     # 语音（M4-C）。听：`LINGER_ASR`；说：`LINGER_TTS`。
     #
     # 默认都是 mock——不配任何东西就能跑通完整链路（含情绪韵律），CI 也不联网。

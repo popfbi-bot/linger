@@ -52,6 +52,7 @@ from ..accounts.service import (
     resolve_token,
     token_for,
 )
+from ..affect.event_model import get_event_judge
 from ..companion import LIFE_STAGES, correct_life_stage, life_stage_valid
 from ..config import settings
 from ..cost import PURPOSE_CHAT, build_report, wrap
@@ -913,6 +914,7 @@ def create_app(
     auth_secret: str | None = None,
     asr: Any | None = None,
     tts: Any | None = None,
+    event_judge: Any | None = None,
 ) -> FastAPI:
     """构造 FastAPI 应用。
 
@@ -925,6 +927,11 @@ def create_app(
     `asr` / `tts`：语音 provider。不传则按 `LINGER_ASR` / `LINGER_TTS` 装配
     （默认 mock）。测试插入自己的实时 mock 就是为了断言「provider 收到了什么参数」——
     那些参数是韵律判据唯一可断言的证据。
+
+    `event_judge`：「这一轮算不算走心」的判官（#38）。不传则按
+    `LINGER_LLM_EVAL` 装配（默认 `off`，即纯规则）——**只在这里装配，
+    Orchestrator 不自己去取单例**，否则每个单测都会顺手起一个模型客户端。
+    缓存与熔断是跨轮状态，所以它必须是单例：每轮新建等于每轮白等一个超时。
     """
     secret = auth_secret or _resolve_auth_secret()
 
@@ -938,6 +945,7 @@ def create_app(
         # 而端点只认 `ASRProvider` / `TTSProvider` 协议（不认具体实现）。
         app.state.asr = asr if asr is not None else get_asr()
         app.state.tts = tts if tts is not None else get_tts()
+        app.state.event_judge = event_judge if event_judge is not None else get_event_judge()
 
         # 外部注入的 repo 由调用方负责关闭，这里不接管
         if repo is not None:
@@ -948,7 +956,9 @@ def create_app(
             # 计量包在 provider 外面（M4-D）：判据 5 要求写路径是 O(1) 单条插入，
             # 所以这里只挂一个「拿到结果就写一条」的包装，不做任何聚合。
             app.state.llm = _metered(app.state.llm, repo)
-            app.state.orch = Orchestrator(repo, app.state.llm, app.state.embedder)
+            app.state.orch = Orchestrator(
+                repo, app.state.llm, app.state.embedder, event_judge=app.state.event_judge
+            )
             yield
             return
 
@@ -963,7 +973,9 @@ def create_app(
             settings.embedder, settings.embedding_dim
         )
         app.state.llm = _metered(app.state.llm, own_repo)
-        app.state.orch = Orchestrator(own_repo, app.state.llm, app.state.embedder)
+        app.state.orch = Orchestrator(
+            own_repo, app.state.llm, app.state.embedder, event_judge=app.state.event_judge
+        )
         try:
             yield
         finally:
