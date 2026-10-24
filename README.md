@@ -4,7 +4,7 @@
 
 一键赋予 AI 一个角色（人格卡 + 场景剧本 + 关系档案），它就有了**记性**、**脾气**、**分寸**，能陪你聊下去。
 
-> 私有仓库。**M4 已收口**：1017 个测试全绿，端到端 14/14 通过（真服务器 + 真 HTTP）。
+> 私有仓库。**M4 已收口**：1022 个测试全绿，端到端 14/14 通过（真服务器 + 真 HTTP）。
 
 ---
 
@@ -137,7 +137,7 @@ python -m evals.run          # 12 条用例，三个维度，低于阈值退出�
 ### 跑测试
 
 ```bash
-python -m pytest        # 1017 passed / 9 skipped
+python -m pytest        # 1022 passed / 9 skipped
 ```
 
 > 不想装包也能跑：`PYTHONPATH=src python -m pytest`（`pyproject.toml` 里已配
