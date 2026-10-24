@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -43,7 +45,21 @@ def detector(tmp_path_factory) -> RedFlagDetector:
     from linger.social.knowledge import SocialKnowledge
 
     d = tmp_path_factory.mktemp("kb")
-    (d / "初遇糟糕_负面清单.md").write_text(
+    # 磁盘文件名故意用 ASCII：这条用例自己在临时目录里造语料，不该因为
+    # 「某些环境写不出中文文件名」（解压工具、同步盘、Wine 这类兼容层）
+    # 而在 CI 上假红。逻辑名（_CORPORA 认的那个）通过 _NAME_MAP 映射过去，
+    # 与产品里给这类环境留的出口是同一条路。
+    negative = "初遇糟糕_负面清单.md"
+    positive = "初遇美好_正面清单.md"
+    # 走产品里那条配置路径（`LINGER_SOCIAL_NAME_MAP`）而不是直接改模块变量：
+    # 这条用例是 module 作用域，用不了 function 作用域的 monkeypatch。
+    import linger.social.knowledge as knowledge
+
+    os.environ["LINGER_SOCIAL_NAME_MAP"] = json.dumps(
+        {negative: "negative.md", positive: "positive.md"}, ensure_ascii=False
+    )
+    knowledge._load_name_map()  # 环境变量改了就重读一次（幂等，覆盖式更新）
+    (d / "negative.md").write_text(
         "## 一、刚认识就踩雷\n\n"
         "1. **他上下打量你的身材，眼神在你身上来回扫**\n"
         "2. **第一次见面就问你的收入、工资多少**\n"
@@ -52,7 +68,7 @@ def detector(tmp_path_factory) -> RedFlagDetector:
         "5. 他一上来就保证「下次带你去」「改天约」\n",
         encoding="utf-8",
     )
-    (d / "初遇美好_正面清单.md").write_text(
+    (d / "positive.md").write_text(
         "## 一、人群里\n\n1. **他和你说话时看着你的眼睛**\n", encoding="utf-8"
     )
     return RedFlagDetector(SocialKnowledge(d))

@@ -54,6 +54,7 @@ from ..accounts.service import (
 )
 from ..companion import LIFE_STAGES, correct_life_stage, life_stage_valid
 from ..config import settings
+from ..cost import PURPOSE_CHAT, build_report, wrap
 from ..diary import DiaryGenerateError, generate_diary
 from ..distill import PersonaDistillError, TranscriptError, distill_persona, parse_transcript
 from ..llm import ResilientProvider, get_provider
@@ -863,6 +864,47 @@ def _synthesize_audio(
 # --------------------------------------------------------------------------- #
 
 
+def _unwrap(provider: Any) -> Any:
+    """剥掉计量包装，返回应用真正在用的那个 provider。
+
+    `/v1/llm/health` 读的是「里面」那层：包装层没有熔断器、也没有
+    `last_report()`，把它的名字报上去等于让健康检查说谎。
+    """
+    seen = 0
+    while hasattr(provider, "inner") and seen < 4:
+        provider = provider.inner
+        seen += 1
+    return provider
+
+
+def _usage_recorder(repo: Repository) -> Any:
+    """造一个「把 UsageRecord 写进 repo」的回调。
+
+    单独抽出来是为了让「记账」这件事只有一个入口：所有 provider 的包装
+    都走它，将来换成批量写 / 换成外部 collector，只改这一处。
+    """
+
+    def record(usage: Any) -> None:
+        repo.record_usage(usage)
+
+    return record
+
+
+def _metered(provider: Any, repo: Repository) -> Any:
+    """给应用实际在用的 provider 套上计量。
+
+    两条规则：
+
+    1. **包在 router 外面，不包在里面。** 一次对话算一次账（而不是每次重试
+       算一次），token 数才和「用户看到的那条回复」对得上。重试了几次从
+       `router.last_report()` 里读，所以看板照样看得见重试风暴。
+    2. 已经套过的不重复套。`RecordingProvider.__getattr__` 会把 `inner`
+       透传出去，重复包装会让同一笔账记两遍——而「多记」比「少记」更麻烦，
+       它让失败率看起来变好。
+    """
+    return wrap(provider, _usage_recorder(repo), purpose=PURPOSE_CHAT)
+
+
 def create_app(
     repo: Repository | None = None,
     llm: Any | None = None,
@@ -903,6 +945,9 @@ def create_app(
             app.state.embedder = embedder or get_embedder(
                 settings.embedder, settings.embedding_dim
             )
+            # 计量包在 provider 外面（M4-D）：判据 5 要求写路径是 O(1) 单条插入，
+            # 所以这里只挂一个「拿到结果就写一条」的包装，不做任何聚合。
+            app.state.llm = _metered(app.state.llm, repo)
             app.state.orch = Orchestrator(repo, app.state.llm, app.state.embedder)
             yield
             return
@@ -917,6 +962,7 @@ def create_app(
         app.state.embedder = embedder or get_embedder(
             settings.embedder, settings.embedding_dim
         )
+        app.state.llm = _metered(app.state.llm, own_repo)
         app.state.orch = Orchestrator(own_repo, app.state.llm, app.state.embedder)
         try:
             yield
@@ -1079,6 +1125,9 @@ def create_app(
         这里读的是进程内的即时状态，不查库、不打外部接口：
         健康检查自己不能成为新的故障点。
         """
+        # 计量包装（M4-D）在 router 外面，健康端点要看的是**里面那个** router：
+        # 不然读出来的是包装层的名字与空熔断器，「谁在用、谁在熔断」全丢了。
+        llm = _unwrap(llm)
         if not isinstance(llm, ResilientProvider):
             return {
                 "provider": getattr(llm, "name", "unknown"),
@@ -1105,6 +1154,32 @@ def create_app(
             "attempts": report["attempts"],
             "skipped": report["skipped"],
         }
+
+    # ------------------------------------------------------------------ #
+    # 成本看板（M4-D）
+    # ------------------------------------------------------------------ #
+    @app.get("/v1/costs")
+    def costs(
+        days: int = 7,
+        repo: Repository = Depends(get_repo),
+    ) -> dict[str, Any]:
+        """这段时间花了多少（判据 2 / 3 / 4 / 5）。
+
+        与 `/v1/llm/health` 的分工：那个回答「这一刻活着吗」，这个回答
+        「这段时间花了多少」。两者都不该由对方代劳。
+
+        **聚合只在这里做**（判据 5）：对话路径上只写单条记录，
+        全表 SUM 留到有人真的打开看板的时候。
+
+        `days` 超出 [1, 365] 时夹到边界而不是 422：一个看板参数不值得
+        让用户对着错误页猜「我是不是多打了一个零」。
+        """
+        window = max(1, min(365, days))
+        from ..cost.report import window_start
+
+        since = window_start(window)
+        records = repo.usage_since(since)
+        return build_report(records, days=window)
 
     # ------------------------------------------------------------------ #
     # 场景（剧本）

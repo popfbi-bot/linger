@@ -220,7 +220,9 @@ def test_schema_tables_match_sqlite() -> None:
     lite_tables = _tables(_SCHEMA)
     assert pg_tables - lite_tables == set(), f"PG 多出来的表：{sorted(pg_tables - lite_tables)}"
     assert lite_tables - pg_tables == set(), f"PG 缺的表：{sorted(lite_tables - pg_tables)}"
-    assert len(pg_tables) == 14, f"表数应是 14，实际 {len(pg_tables)}"
+    # 表数是个硬数字，只为「多一张少一张」能被这条用例看见。
+    # 14 → 15：M4-D 加了 `llm_usage`（用量流水，两边同构）。
+    assert len(pg_tables) == 15, f"表数应是 15，实际 {len(pg_tables)}"
 
 
 def test_schema_has_no_placeholders_and_uses_timestamptz() -> None:
@@ -354,9 +356,13 @@ def test_importing_storage_does_not_require_psycopg() -> None:
         "import sys; import linger.storage; "
         "assert 'psycopg' not in sys.modules, '导入 storage 就把 psycopg 拖进来了'"
     )
+    # 子进程怎么找到 `linger`：走 `PYTHONPATH`，并且**同时**把 src 加进 -c 的
+    # 搜索路径。两个都要，因为 `PYTHONPATH` 在某些 Windows 兼容层/受限环境里
+    # 不会被继承（本次验收在 Windows 兼容层上就撞到了，症状是「No module
+    # named 'linger'」而不是被测代码的问题）。
     env = dict(os.environ, PYTHONPATH=str(root / "src"))
     proc = subprocess.run(
-        [sys.executable, "-c", code],
+        [sys.executable, "-c", f"import sys; sys.path.insert(0, {str(root / 'src')!r}); {code}"],
         cwd=str(root),
         capture_output=True,
         text=True,

@@ -357,3 +357,42 @@ class MemoryEditRecord(BaseModel):
     old_content: str
     new_content: str
     edited_at: datetime = Field(default_factory=now_utc)
+
+# --------------------------------------------------------------------------- #
+# LLM 用量记录（M4-D 成本看板）
+# --------------------------------------------------------------------------- #
+
+
+class UsageRecord(BaseModel):
+    """一次 LLM 调用的一行账。
+
+    这是**流水**，不是聚合：一条 INSERT 一行，不做任何统计（判据 5）。
+    聚合只在 `/v1/costs` 查的时候做，否则每轮对话都要跑一次全表 SUM，
+    延迟会随历史记录线性增长。
+
+    两件事在这里被刻意做成「必须显式表达」：
+
+    1. `ok=False` 的记录也进这张表。只记成功调用，重试风暴就隐形了——
+       而重试风暴正是烧钱的主因。失败率 = 1 - sum(ok) / count(*)。
+    2. `tokens_in` / `tokens_out` 为 `None` 表示**不知道**，不是 0。
+       provider 没报 usage 又估不出来时，宁可留空，也不写一个会被读成
+       「这次免费」的 0。
+    """
+
+    id: int = 0
+    created_at: datetime = Field(default_factory=now_utc)
+    provider: str = "unknown"
+    model: str = "unknown"
+    purpose: str = "chat"  # chat / generate / distill / diary
+    ok: bool = True
+    degraded: bool = False
+    error: str | None = None
+    elapsed_ms: int = 0
+    chunks: int = 0
+    attempts: int = 0
+    skipped: list[str] = Field(default_factory=list)
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    tokens_cached: int = 0
+    estimated: bool = True  # True = 数字是估的，不是 provider 报的
+

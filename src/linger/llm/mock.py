@@ -17,6 +17,7 @@ import random
 from collections.abc import Iterator
 from typing import Any
 
+from ..compose.compiler import estimate_tokens
 from .base import chunks
 
 _NEG = ("难过", "累", "崩溃", "哭", "压力", "失业", "分手", "病了", "砸了", "没戏", "失眠", "烦", "撑不住")
@@ -105,11 +106,39 @@ def _first_question(user: str) -> str | None:
 
 class MockProvider:
     name = "mock"
+    # 假模型的「模型名」。单价表里 `mock:mock` 是写明的 0——那是真的 0
+    # （本地算力，边际成本为零），与「不知道所以给 None」是两件事。
+    model = "mock"
 
     def __init__(self, seed: int = 7) -> None:
         self._rng = random.Random(seed)
+        # 最近一次调用的用量（M4-D）。**确定性**：同样的输入得同样的数字，
+        # 否则「用 mock 跑出来的看板」每次刷新都会变，测试也没法断言。
+        # 形状与真 provider 的 usage 一致，所以 RecordingProvider 不必区分真假。
+        self.last_usage: dict[str, int] | None = None
 
     def generate(
+        self,
+        system: str,
+        messages: list[dict[str, str]],
+        ctx: dict[str, Any] | None = None,
+    ) -> Iterator[str]:
+        self.last_usage = None
+        produced = 0
+        for chunk in self._stream(system, messages, ctx):
+            produced += len(chunk)
+            yield chunk
+        # 记账放在流末尾：真 provider 的 usage 也是最后一个 chunk 才到，
+        # 提前写会让「调用失败时用量凭空出现」。
+        self.last_usage = {
+            "in": estimate_tokens(system) + estimate_tokens(
+                "\n".join(m.get("content", "") for m in messages)
+            ),
+            "out": estimate_tokens("x" * produced),
+            "cached": 0,
+        }
+
+    def _stream(
         self,
         system: str,
         messages: list[dict[str, str]],

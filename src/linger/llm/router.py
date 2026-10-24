@@ -128,6 +128,7 @@ class ResilientProvider:
         retries_per_provider: int = 1,
         breaker: CircuitBreaker | None = None,
         breaker_factory: Callable[[], CircuitBreaker] | None = None,
+        on_report: Callable[[dict[str, Any]], None] | None = None,
         now=time.monotonic,
     ) -> None:
         if first_chunk_timeout <= 0:
@@ -146,6 +147,11 @@ class ResilientProvider:
         ]
         self._now = now
         self._last_report: dict[str, Any] | None = None
+        # 旁路计量回调（M4-D）。**不参与任何流程控制**：它拿到的是已经算完的
+        # 那份观测报告，调用它之后代码照旧往下走；它抛异常也只被吞掉。
+        # 为什么不做成 router 内部直接记账：M4-A 的韧性语义已验收，
+        # 在里面加分支就等于让「有没有账本」变成「重试几次」的隐变量。
+        self.on_report = on_report
 
     # ------------------------------------------------------------------ #
     @property
@@ -234,6 +240,20 @@ class ResilientProvider:
                 except Exception as exc:  # noqa: BLE001 - 首 chunk 前的任何失败都可重试
                     ch.cancel.set()
                     attempts.append({"provider": name, "error": _describe(exc)})
+                    # 旁路计量（M4-D）：**每一次失败尝试**都要被看见，而不是只有
+                    # 最后那次 `_report`。重试风暴的表现正是「中间那些尝试全失败」——
+                    # 只统计最终结果，看板上只看得到一个成功的调用，风暴完全隐形。
+                    # 这个回调不参与分支判断：`continue` / `raise` 该走还是走。
+                    self._notify(
+                        {
+                            "ok": False,
+                            "degraded": index > 0,
+                            "provider": name,
+                            "error": _describe(exc),
+                            "elapsed_ms": int((self._now() - started) * 1000),
+                            "attempt": len(attempts),
+                        }
+                    )
                     if isinstance(exc, LLMTimeoutError):
                         # 整体超时是全局失败，不是「这个 provider 不行」——
                         # 再换一个也只会把剩下的时间烧光。
@@ -348,6 +368,21 @@ class ResilientProvider:
             "skipped": list(skipped),
             "error": error,
         }
+        self._notify(self._last_report)
+
+    def _notify(self, report: dict[str, Any]) -> None:
+        """把观测报告交给旁路回调。
+
+        吞掉一切异常：账记错了可以补，回复丢了不能补。回调里抛出去的错
+        一旦冒到这里，会变成「一次对话因为记账挂了而失败」——那是荒谬的因果。
+        """
+        callback = getattr(self, "on_report", None)
+        if callback is None:
+            return
+        try:
+            callback(dict(report))
+        except Exception:  # noqa: BLE001 - 见 docstring
+            pass
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         names = "、".join(getattr(p, "name", "?") for p in self.providers)
