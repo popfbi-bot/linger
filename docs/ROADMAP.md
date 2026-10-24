@@ -266,6 +266,11 @@
   `_persona_brief` 露 owner + provenance（前端不必猜「列表里的都是我的」）；
   模板实例化只认领一次（第一行归第一个登录用户，后来者抢不走）；
   上架按钮**不进 DOM** 而不是置灰（看不见才点不到）。
+  **交叉复核（2026-10-24，另一轮会话独立做的）**：结论与该记录一致——
+  登录 → `POST /v1/personas` 带顶层 `owner` → `provenance.owner` 被盖章
+  → 上架 **201 pending_review**（#34 缺口真补上了，此前必然 403）；
+  声称别人的 owner → **403**（落库前拦）；匿名创建 → provenance 无 owner。
+  ⇒ 两个独立会话、两套不同方法（HTTP 直调 vs 脚本工厂）得到同一结论。
   ⚠️ **验收方修正一处**：NPC 越界改了 `docs/ROADMAP.md`（issue 明令别动 docs），
   合并时摘出，本章由本窗口重写——**文档归一窗口管**，否则两处各写一份必然漂移。
   #35 语音链路、#36 成本看板、#37 评测入 CI、#38 事件评估换小模型继续排队。
@@ -761,3 +766,16 @@
 | 前端（原生 JS） | 市场区块**常驻收起**——未登录也看得见、不弹登录墙；上架按钮只进「归属是自己」的卡，**不进 DOM** 而非置灰 |
 | 测试 | `tests/test_market_frontend.py` 23 条（HTTP + 真 node 跑真 app.js 的 DOM harness）；全量 836 / 9 skipped / 0 failed |
 | 交付形态 | git bundle 主推（`git bundle verify` 对象级校验）+ patch 兜底 |
+## ⚠️ 观测空白：CI 运行状态查不到（2026-10-24）
+
+本窗口推了多个合并提交（#34/#35/#36/#39 及 docs），但**无法用 CLI 确认远端 CI 是否绿**：
+- `cnb` CLI 没有 pipeline/runs 子命令（`repositories` 模块 14 个工具里没有）；
+- `cnb event get-events --date 26-10-24` 返回 404（errcode 5 Resource not found）。
+
+**间接证据**：本地真 Windows 全量 913 passed / 9 skipped / 0 failed；
+CI 环境差异已逐项分析（Linux vs Windows、Python 3.11 vs 3.13 语法兼容、
+无 psycopg → 9 skip 一致），理论上应当绿。
+**但这只是推断，不是观测**——「本地绿 ≠ CI 绿」这条纪律的反面同样成立。
+
+⇒ **待确认**：之后若拿到 CNB 的 pipeline 查询方式（或 Web 控制台看一眼），
+把 #34~#39 各提交的 CI 结果补记在此。在此之前，**不要声称「CI 已验证」**。
