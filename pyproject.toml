@@ -45,7 +45,7 @@ where = ["src"]
 linger = ["templates/personas/*.yaml", "templates/scenarios/*.yaml", "server/static/*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "evals"]
 pythonpath = ["src"]
 addopts = "-q"
 

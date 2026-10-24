@@ -13,7 +13,19 @@
 # 4. `python -m pytest -q -ra`：-ra 让失败时打印 FAILED 用例名摘要，
 #    -q 又不会把 661 条通过用例全刷屏。
 #
-# 本地等价命令：python -m pytest -q
+# --- 评测 stage（M4-E / issue #37）---
+# 5. `evals` 是**独立 stage**，排在 test 之后。理由：它回答的是另一个问题。
+#    test 问「代码对不对」（913 条单测），evals 问「味道对不对」（12 条评测）。
+#    合成一个 stage 的话，红的时候要先分辨是「单测挂了」还是「人格漂移了」；
+#    分开之后，构建记录里哪个 Stage 红的就是哪一类问题。
+# 6. 评测**不需要 key**：`LINGER_LLM` 已经是 mock，12 条用例全是规则判据。
+#    需要真实模型的 LLM-as-judge 用例在缺 key 时走 skip（退出码仍是 0）——
+#    「skip 不是 error」是这一 stage 的红线，否则 CI 会永远红。
+# 7. 评测 stage 红了就**真的红**（非 0 退出 → 构建失败），没做成「只提示」。
+#    只提示的评测等于没有：没人会去看一条不会拦人的日志。
+#    相应地，报告里必须第一眼能看出「哪一类掉了、挂在哪个判据」——不然它就成了负担。
+#
+# 本地等价命令：python -m pytest -q && python -m evals.run
 
 # CI 任务统一模板（YAML 锚点，push / pull_request 各用一次，避免两处漂移）
 .ci-test-pipeline: &ci-test-pipeline
@@ -35,6 +47,11 @@
     - name: test
       script:
         - python -m pytest -q -ra
+    - name: evals
+      script:
+        # 评测基线：12 条用例 / 三类。红了先读报告里的「类别分 + 挂掉的判据名」，
+        # 再读 evals/README.md 的「分数掉了第一步看什么」。
+        - python -m evals.run
 
 main:
   # main 分支 push：合并后跑一遍全量，兜住「直接推 main」的漏网之鱼
