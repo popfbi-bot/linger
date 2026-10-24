@@ -1374,7 +1374,48 @@ body {
 
 .auth-field input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
 
+/* select 要和 input 长得一样，否则「提供方」那一栏看着像别的东西 */
+.auth-field select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--text);
+  font: inherit;
+}
+
+.auth-field select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+
 .auth-actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+
+/* ───────────── 模型配置面板 ───────────── */
+
+/* 比登录卡宽一点：四个字段 + 四个按钮，360px 会挤成两行 */
+.llm-card { width: min(460px, calc(100vw - 32px)); }
+
+.llm-card .hint { font-size: 12px; line-height: 1.55; color: var(--text-dim); }
+
+.llm-card code {
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-size: 11px;
+}
+
+/* 成功提示不要用红色（红色是 auth-error 的语义） */
+.llm-ok {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: #2f6b3f;
+  background: #f2f9f4;
+  border: 1px solid #cfe6d6;
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+}
+
+.llm-ok[hidden] { display: none; }
 
 .auth-error {
   margin: 10px 0 0;

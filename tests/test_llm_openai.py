@@ -124,6 +124,23 @@ class _FakeStream:
         self.attempt = attempt
         self.status = script[min(attempt, len(script) - 1)]
 
+    @property
+    def status_code(self) -> int:
+        """真 httpx 的 `Response` 有 `status_code`（不是 `status`）。
+
+        假件原来只有 `status`，于是「非 2xx 先 read() 再抛」这段修复
+        在假件上直接 AttributeError——**假件比真实宽松，也是一种失真**：
+        它让被测代码用了真实环境里不存在的属性名而测不出来。
+        """
+        return self.status
+
+    def read(self) -> bytes:
+        """真 httpx 的 `Response.read()`。出错路径会先调它把 body 落定。
+
+        假件不实现的话，`if r.status_code >= 400: r.read()` 直接 AttributeError。
+        """
+        return b""
+
     def __enter__(self):
         return self
 
@@ -248,3 +265,98 @@ def test_max_tokens_leaves_room_for_reasoning(monkeypatch):
         f"max_tokens 太小（{captured.get('max_tokens')}）——"
         "thinking 模型的 reasoning 会吃掉配额，正文会被截成空"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 5. 错误响应体必须被读出来——否则「友好错译」永远走不到
+# --------------------------------------------------------------------------- #
+
+
+class _UnreadBodyStream:
+    """真实的流式错误响应：body 惰性，未 `read()` 前访问 `.json()` 会抛。
+
+    这是 httpx 的真实语义（`ResponseNotRead`）。原来的假件用
+    `httpx.Response(401, json={...})` 构造，body 是现成的、不需要读，
+    所以测试一直绿——而线上用户填错 key 时看到的是一句 httpx 内部报错。
+
+    这里刻意**持有同一个 `httpx.Response` 对象**：`read()` 落定它的 body，
+    `raise_for_status()` 抛出的异常也指向它——和真 httpx 的对象关系一致。
+    否则「读完再抛」这个修复在假件上验不出来。
+    """
+
+    def __init__(self, status: int, payload: dict) -> None:
+        self.status = status
+        self._resp = httpx.Response(
+            status,
+            stream=httpx.ByteStream(json.dumps(payload).encode("utf-8")),
+            request=httpx.Request("POST", "https://x/v1/chat/completions"),
+        )
+
+    @property
+    def status_code(self) -> int:
+        return self.status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self) -> bytes:
+        """把惰性 body 读进内存——真 httpx 里这一步之后 `.json()` 才能用。"""
+        return self._resp.read()
+
+    def raise_for_status(self):
+        self._resp.raise_for_status()
+
+    def iter_lines(self):
+        yield "data: [DONE]"
+
+
+class _UnreadBodyClient:
+    def __init__(self, status: int, payload: dict) -> None:
+        self.status = status
+        self.payload = payload
+
+    def __call__(self, *a, **kw):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def stream(self, method, url, json=None, headers=None):
+        return _UnreadBodyStream(self.status, self.payload)
+
+
+def test_error_body_is_read_before_raising(monkeypatch):
+    """判据：401 时报错必须是「令牌」人话，不能是 `ResponseNotRead`。
+
+    这条反例很干脆：把 `_stream` 里那句 `if r.status_code >= 400: r.read()`
+    删掉，本测试立刻红，报错变成
+    「ResponseNotRead: Attempted to access streaming response content...」
+    ——用户照着这句去查，永远查不到「你的 key 错了」。
+    """
+    fake = _UnreadBodyClient(401, {"error": {"message": "invalid api key"}})
+    monkeypatch.setattr(httpx, "Client", fake)
+    provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+
+    with pytest.raises(RuntimeError) as ei:
+        list(provider.generate("sys", [{"role": "user", "content": "hi"}]))
+    msg = str(ei.value)
+    assert "ResponseNotRead" not in msg, f"响应体没被读出来，报错是 httpx 内部细节：{msg}"
+    assert "令牌" in msg, f"应给出「令牌」人话提示，实际：{msg}"
+
+
+def test_error_body_read_keeps_server_detail(monkeypatch):
+    """判据：读出来的响应体要真的用上——服务端给的原因不能丢。"""
+    fake = _UnreadBodyClient(404, {"error": {"message": "no such model: gpt-9"}})
+    monkeypatch.setattr(httpx, "Client", fake)
+    provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+
+    with pytest.raises(RuntimeError) as ei:
+        list(provider.generate("sys", [{"role": "user", "content": "hi"}]))
+    msg = str(ei.value)
+    assert "no such model: gpt-9" in msg, f"服务端原因丢了：{msg}"

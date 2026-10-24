@@ -91,6 +91,14 @@ class OpenAICompatProvider:
     ) -> Iterator[str]:
         """真正的流式请求。异常由调用方处理。"""
         with httpx.Client(timeout=60.0) as client, client.stream("POST", url, json=payload, headers=headers) as r:
+            # 出错时必须**先把响应体读进内存**再抛。
+            # 流式响应的 body 是惰性的：`raise_for_status()` 抛出后，
+            # 上层 `_error_detail()` 去 `response.json()` 会撞上
+            # `ResponseNotRead: Attempted to access streaming response content`——
+            # 于是「友好错译」永远走不到，用户填错 key 最终看到的是 httpx 内部报错。
+            # 这段代码写了很久都没被发现，因为测试里的假响应体是现成的、不需要读。
+            if r.status_code >= 400:
+                r.read()
             r.raise_for_status()
             for line in r.iter_lines():
                 if not line or not line.startswith("data:"):

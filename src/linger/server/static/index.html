@@ -22,6 +22,9 @@
       <button id="btn-show-auth" class="btn-ghost">登录</button>
       <button id="btn-logout" class="btn-ghost" hidden>退出</button>
     </div>
+    <!-- 模型配置（M4 收口后补）：不用改环境变量重启就能换真模型。
+         默认收起成一枚按钮——未配置时也不打扰，只显示「免密钥」。 -->
+    <button id="btn-show-llm" class="btn-ghost" title="配置用哪个模型">模型</button>
     <span id="conn-state" class="pill pill-idle">未连接</span>
     <button id="btn-reset" class="btn-ghost" title="重新开始一个会话">重开</button>
   </div>
@@ -48,6 +51,48 @@
     </div>
     <p id="auth-error" class="auth-error" hidden></p>
     <p id="auth-claim-hint" class="hint" hidden></p>
+  </div>
+</div>
+
+<div id="llm-panel" class="auth-panel" hidden>
+  <div class="auth-card llm-card">
+    <h2>用哪个模型</h2>
+    <p class="hint" id="llm-hint">免密钥模式下用 Mock 模型（只会机械回应）。填一个 OpenAI 兼容的 key 就能换成真模型。</p>
+
+    <label class="auth-field">
+      <span>提供方</span>
+      <select id="llm-provider">
+        <option value="mock">mock · 免密钥（本地占位，不联网）</option>
+        <option value="openai">openai · 任意 OpenAI 兼容端点</option>
+      </select>
+    </label>
+    <label class="auth-field">
+      <span>接口地址 <small class="muted">（openai 时用）</small></span>
+      <input id="llm-base-url" type="text" placeholder="https://api.deepseek.com/v1" autocomplete="off">
+    </label>
+    <label class="auth-field">
+      <span>模型名</span>
+      <input id="llm-model" type="text" placeholder="deepseek-chat" autocomplete="off">
+    </label>
+    <label class="auth-field">
+      <span>API Key</span>
+      <input id="llm-api-key" type="password" placeholder="sk-..." autocomplete="off">
+    </label>
+    <p class="hint" id="llm-key-note">
+      Key <strong>只存在你这台机器上</strong>（<code id="llm-file-path">data/llm_settings.json</code>，
+      <code>data/</code> 已在 .gitignore 里，不会进版本库）。明文保存——
+      加密需要另一把钥匙，那把钥匙还是得放在同一台机器上，所以这里选择诚实：
+      明文 + 只允许本机修改。不建议把这个文件分享给别人。
+    </p>
+
+    <div class="auth-actions">
+      <button id="btn-llm-save" class="btn-secondary">保存并测试</button>
+      <button id="btn-llm-test" class="btn-ghost">只测试</button>
+      <button id="btn-llm-clear" class="btn-ghost">清除，回到免密钥</button>
+      <button id="btn-llm-close" class="btn-ghost">关闭</button>
+    </div>
+    <p id="llm-status" class="auth-error" hidden></p>
+    <p id="llm-ok" class="hint" hidden></p>
   </div>
 </div>
 

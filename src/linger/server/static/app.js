@@ -96,6 +96,22 @@
     btnAuthClose: $("btn-auth-close"),
     authError: $("auth-error"),
     authClaimHint: $("auth-claim-hint"),
+    // 模型配置面板（M4 收口后补）
+    btnShowLlm: $("btn-show-llm"),
+    llmPanel: $("llm-panel"),
+    llmProvider: $("llm-provider"),
+    llmBaseUrl: $("llm-base-url"),
+    llmModel: $("llm-model"),
+    llmApiKey: $("llm-api-key"),
+    llmKeyNote: $("llm-key-note"),
+    llmFilePath: $("llm-file-path"),
+    llmHint: $("llm-hint"),
+    llmStatus: $("llm-status"),
+    llmOk: $("llm-ok"),
+    btnLlmSave: $("btn-llm-save"),
+    btnLlmTest: $("btn-llm-test"),
+    btnLlmClear: $("btn-llm-clear"),
+    btnLlmClose: $("btn-llm-close"),
     personaList: $("persona-list"),
     myPersonaList: $("my-persona-list"),
     myPersonaCount: $("my-persona-count"),
@@ -278,9 +294,6 @@
       throw new Error(`${resp.status} ${detail}`);
     }
     const out = await resp.json();
-    if (path.startsWith("/v1/personas") || path.startsWith("/v1/market")) {
-      try { console.log("DEBUG", path, JSON.stringify(Object.keys(out))); } catch (_) {}
-    }
     return out;
   }
 
@@ -2979,6 +2992,175 @@
     saveCompanionStage(e.target.value);
   });
 
+  // ────────────────── 模型配置（界面里填 key，免重启） ──────────────────
+  //
+  // 这个面板存在的原因很朴素：换真模型只有「改环境变量 + 重启」一条路，
+  // 而用户根本不知道 `LINGER_LLM=openai` 这种词该怎么拼。
+  //
+  // 三条界面上的纪律：
+  //   1. **key 不回填**。服务端只返回是否配了 + 末四位提示，输入框永远是空的；
+  //      空着提交 = 不修改（否则「只想换个模型名」会把 key 抹掉）。
+  //   2. **保存前先试一次**。连通性失败要当场说，不能存进去以后一聊天就报错。
+  //   3. **mock 是合法选项**，不是「没配置」——所以置灰字段而不是隐藏它们。
+
+  function setLlmMsg(ok, text) {
+    el.llmStatus.hidden = true;
+    el.llmOk.hidden = true;
+    if (!text) return;
+    const node = ok ? el.llmOk : el.llmStatus;
+    node.textContent = text;
+    node.hidden = false;
+  }
+
+  function syncLlmFields() {
+    const isRemote = el.llmProvider.value !== "mock";
+    // 置灰而不是隐藏：隐藏会让人以为「没有这个选项」，置灰才看得出「这里能填，只是现在不用」
+    for (const node of [el.llmBaseUrl, el.llmModel, el.llmApiKey]) {
+      node.disabled = !isRemote;
+    }
+    // mock 下清空显示：留着上次的 openai 地址会让人以为「我没填怎么就有了」。
+    // 切回 openai 时把之前的值放回去，省得重打一遍。
+    if (isRemote) {
+      for (const [node, key] of [[el.llmBaseUrl, "savedBase"], [el.llmModel, "savedModel"]]) {
+        if (!node.value && node.dataset[key]) node.value = node.dataset[key];
+      }
+    } else {
+      el.llmBaseUrl.dataset.savedBase = el.llmBaseUrl.value || el.llmBaseUrl.dataset.savedBase || "";
+      el.llmModel.dataset.savedModel = el.llmModel.value || el.llmModel.dataset.savedModel || "";
+      el.llmBaseUrl.value = "";
+      el.llmModel.value = "";
+    }
+    const ph = isRemote ? null : "（mock 不需要）";
+    el.llmBaseUrl.placeholder = ph || "https://api.deepseek.com/v1";
+    el.llmModel.placeholder = ph || "deepseek-chat";
+    el.llmApiKey.placeholder = ph || "sk-...";
+  }
+
+  function renderLlmSettings(payload) {
+    const eff = (payload && payload.effective) || {};
+    const isMock = !eff.provider || eff.provider === "mock";
+    el.llmProvider.value = isMock ? "mock" : "openai";
+    // 先把服务端的值放进 dataset，再由 syncLlmFields 决定「现在该不该显示」
+    el.llmBaseUrl.value = eff.base_url || "";
+    el.llmModel.value = eff.model || "";
+    el.llmBaseUrl.dataset.savedBase = eff.base_url || "";
+    el.llmModel.dataset.savedModel = eff.model || "";
+    el.llmApiKey.value = ""; // 永远不回填
+    if (payload && payload.file) el.llmFilePath.textContent = payload.file;
+
+    const bits = [isMock ? "mock（免密钥，不联网）" : eff.provider];
+    if (!isMock) {
+      if (eff.model) bits.push(eff.model);
+      bits.push(eff.api_key_set ? `key ${eff.api_key_hint}` : "未配置 key");
+    }
+    el.llmHint.textContent = "当前生效：" + bits.join(" · ");
+    syncLlmFields();
+  }
+
+  async function loadLlmSettings() {
+    try {
+      renderLlmSettings(await api("/v1/settings/llm"));
+    } catch (err) {
+      setLlmMsg(false, `读不到当前配置：${err.message}`);
+    }
+  }
+
+  function openLlmPanel() {
+    el.llmPanel.hidden = false;
+    setLlmMsg(true, "");
+    el.llmHint.textContent = "正在读取当前配置…";
+    loadLlmSettings();
+  }
+
+  function closeLlmPanel() {
+    el.llmPanel.hidden = true;
+  }
+
+  async function saveLlmSettings() {
+    const provider = el.llmProvider.value;
+    const body = { provider };
+    if (provider !== "mock") {
+      body.base_url = el.llmBaseUrl.value.trim();
+      body.model = el.llmModel.value.trim();
+    }
+    // 只有真填了新 key 才带上；留空＝保持原样（三态语义见后端注释）
+    const typed = el.llmApiKey.value.trim();
+    if (typed) body.api_key = typed;
+
+    const btn = el.btnLlmSave;
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "保存中…";
+    setLlmMsg(true, "正在保存并试连（最多几秒）…");
+    try {
+      const out = await api("/v1/settings/llm", { method: "PUT", body: JSON.stringify(body) });
+      renderLlmSettings(out);
+      const probe = out.probe || {};
+      if (probe.ok) {
+        setLlmMsg(
+          true,
+          `已生效 · ${probe.provider || provider} · ${probe.latency_ms}ms · 回了一句「${probe.reply || ""}」。回聊天区继续就行，会话不会断。`
+        );
+      } else {
+        setLlmMsg(false, `保存了但试连没通：${probe.error || "未知原因"}`);
+      }
+    } catch (err) {
+      // 后端在试连失败时会回滚并返回 400，所以这里文字要让人知道「没生效」
+      setLlmMsg(false, `${err.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+
+  async function testLlm() {
+    setLlmMsg(true, "正在试连…");
+    try {
+      const out = await api("/v1/settings/llm/test", { method: "POST" });
+      if (out.ok) {
+        setLlmMsg(true, `通了 · ${out.provider || ""} · ${out.latency_ms}ms · 回了一句「${out.reply || ""}」`);
+      } else {
+        setLlmMsg(false, `没通：${out.error || "未知原因"}`);
+      }
+    } catch (err) {
+      setLlmMsg(false, `试连失败：${err.message}`);
+    }
+  }
+
+  async function clearLlmSettings() {
+    setLlmMsg(true, "正在清除…");
+    try {
+      renderLlmSettings(await api("/v1/settings/llm", { method: "DELETE" }));
+      setLlmMsg(true, "已清除，回到免密钥（mock）。下次启动也还是 mock。");
+    } catch (err) {
+      setLlmMsg(false, `清除失败：${err.message}`);
+    }
+  }
+
+  el.btnShowLlm.addEventListener("click", openLlmPanel);
+  el.btnLlmClose.addEventListener("click", closeLlmPanel);
+  el.btnLlmSave.addEventListener("click", saveLlmSettings);
+  el.btnLlmTest.addEventListener("click", testLlm);
+  el.btnLlmClear.addEventListener("click", clearLlmSettings);
+  el.llmProvider.addEventListener("change", syncLlmFields);
+  // 在面板里按「模型/地址/模型名/key」任意一处回车，等同点「保存并测试」
+  for (const node of [el.llmBaseUrl, el.llmModel, el.llmApiKey]) {
+    node.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        saveLlmSettings();
+      }
+    });
+  }
+  el.llmPanel.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeLlmPanel();
+  });
+  // 点遮罩空白处关闭（和常见弹层的预期一致）
+  el.llmPanel.addEventListener("click", (e) => {
+    if (e.target === el.llmPanel) closeLlmPanel();
+  });
+  syncLlmFields();
+
   // ───────────────────────────── 启动 ─────────────────────────────
 
   // 先确认登录态再拉数据：人格列表与「我的人格」都按 user_id 过滤，
@@ -3009,6 +3191,13 @@
     // grep 证明不了这一点，所以这两个入口要能被 harness 调到。
     loadCosts,
     renderCosts,
+    // 模型配置（M4 收口后补）。判据要能断到「填了 key 真的走了 PUT 且生效了」，
+    // 而不是「页面上有个输入框」——所以这几个入口也得能被 harness 调到。
+    openLlmPanel,
+    renderLlmSettings,
+    saveLlmSettings,
+    testLlm,
+    clearLlmSettings,
   };
 
   restoreAccount().finally(() => {

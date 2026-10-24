@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import os
 import secrets
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -158,6 +159,24 @@ class CreatePersonaRequest(BaseModel):
         if not self.template_id and not self.persona:
             raise ValueError("template_id 与 persona 至少给一个")
         return self
+
+
+class LLMSettingsRequest(BaseModel):
+    """界面里填的模型配置（M4 收口后补）。
+
+    `api_key` 的三态语义很重要，别简化成一个字符串：
+      · 字段**不出现**（None）→ 不碰已有的 key（用户只改 model 时不至于把 key 抹掉）
+      · 空字符串 `""`        → **显式清除**
+      · 有值                 → 换成新的
+
+    如果只有「传了就覆盖」，那「只想改 model」的请求会把 key 清空，
+    用户会发现「我只是换了个模型，怎么就变回 mock 了」。
+    """
+
+    provider: str = Field(default="", description="mock / openai / 其它已注册的 provider 名")
+    base_url: str = Field(default="", description="OpenAI 兼容端点，如 https://api.deepseek.com/v1")
+    model: str = Field(default="", description="模型名，如 deepseek-chat")
+    api_key: str | None = Field(default=None, description="None=不改；''=清除；有值=替换")
 
 
 class GeneratePersonaRequest(BaseModel):
@@ -891,6 +910,157 @@ def _usage_recorder(repo: Repository) -> Any:
     return record
 
 
+def _require_local(request: Request) -> None:
+    """只允许本机修改模型配置。
+
+    默认服务监听 127.0.0.1，看起来「本来就只有本机能访问」——但这不能只靠默认值：
+    有人用 `--host 0.0.0.0` 挂到局域网上时，这个端点就变成「任何人都能改你的模型」
+    或者「任何人都能往里塞自己的 key」。所以显式检查，不依赖部署姿势。
+
+    `testclient` 是 FastAPI TestClient 的来源标识——那是测试，放进白名单。
+    """
+    host = ""
+    try:
+        host = (request.client.host if request.client else "") or ""
+    except Exception:  # pragma: no cover - 极端情况
+        host = ""
+    if host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+        raise HTTPException(status_code=403, detail="只有本机可以修改模型配置")
+
+
+def _reload_llm(app: FastAPI) -> None:
+    """按当前 `settings` 重新装配 provider 与 Orchestrator（热切换）。
+
+    **必须重建 Orchestrator**：它持有 provider 引用，只换 `app.state.llm`
+    的话，下一轮对话还在用旧的那个（用户会以为「保存了但没用」）。
+
+    计量层 `_metered` 要重新包一遍：新 provider 不包的话，这一轮之后的调用
+    就不记账了——成本看板会静默停更，比报错更难发现。
+    """
+    from ..llm import get_provider
+    from ..orchestrator import Orchestrator
+
+    provider = get_provider()
+    app.state.llm = _metered(provider, app.state.repo)
+    app.state.orch = Orchestrator(
+        app.state.repo,
+        app.state.llm,
+        app.state.embedder,
+        event_judge=getattr(app.state, "event_judge", None),
+    )
+
+
+# 试连的硬上限。provider 内部 httpx 的超时是 60 秒，而韧性层还会重试、
+# 并在失败后兜到 `llm_fallback`（默认 mock）——如果探测走那条路，一个写错的
+# key 会被 mock 接住，界面显示「已生效 · 回了一句『嗯……』」。
+# **那是这个面板最坏的一种撒谎方式**，所以探测必须绕开兜底、且有时间上界。
+PROBE_DEADLINE = 8.0
+
+
+def _probe_llm(app: FastAPI) -> dict[str, Any]:
+    """真发一句话，判断「这个配置现在能不能用」。
+
+    三个刻意的选择：
+
+    1. **直连主 provider，不用 `app.state.llm`**。后者套了韧性层：会重试、
+       失败后兜到 `LINGER_LLM_FALLBACK`（默认 `mock`）。用它探测等于用
+       「有没有人接住」回答「配置对不对」——而 mock 永远接得住。
+    2. **8 秒硬上限**。设置界面不该让人盯着转圈；打不通的地址（DNS 挂住、
+       TCP 黑洞）比报错更常见，而 provider 内部超时是 60 秒。
+    3. **错误信息里抹掉 key**。provider 的报错可能带上 URL，而 URL 可能带 key
+       （`?api_key=...` 这种接法很常见）。
+    """
+    import threading
+    import time
+
+    from ..config import settings as cfg_obj
+    from ..llm import _build
+
+    provider_name = (cfg_obj.llm_provider or "mock").strip() or "mock"
+    try:
+        probe_provider = _build(provider_name)
+    except Exception as exc:  # noqa: BLE001 - 装配失败本身就是答案
+        return {
+            "ok": False,
+            "latency_ms": 0,
+            "provider": provider_name,
+            "error": _scrub(_err_text(exc)),
+        }
+
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        chunks: list[str] = []
+        try:
+            stream = probe_provider.generate(
+                "你是一个连通性测试助手。只回一句话，不要解释。",
+                [{"role": "user", "content": "说：连通了"}],
+            )
+            for i, delta in enumerate(stream):
+                chunks.append(str(delta))
+                if i >= 40:  # 够了，别为了测试把整段回复都烧完
+                    break
+            box["text"] = "".join(chunks).strip()
+        except Exception as exc:  # noqa: BLE001
+            box["error"] = _scrub(_err_text(exc))
+
+    started = time.monotonic()
+    # daemon=True：卡住的线程不能拖住进程退出（它最多被底层 60 秒超时收掉）
+    worker = threading.Thread(target=_run, name="linger-llm-probe", daemon=True)
+    worker.start()
+    worker.join(PROBE_DEADLINE)
+    latency = int((time.monotonic() - started) * 1000)
+
+    if worker.is_alive():
+        return {
+            "ok": False,
+            "latency_ms": latency,
+            "provider": provider_name,
+            "error": f"超过 {PROBE_DEADLINE:.0f} 秒没有回应：地址可能不通，或模型太慢",
+        }
+    if "error" in box:
+        return {"ok": False, "latency_ms": latency, "provider": provider_name, "error": box["error"]}
+
+    text = box.get("text") or ""
+    return {
+        "ok": bool(text),
+        "latency_ms": latency,
+        "reply": text[:120],
+        "provider": provider_name,
+        "error": "" if text else "模型没有任何输出",
+    }
+
+
+def _err_text(exc: Exception) -> str:
+    """异常 → 给人看的错误文本。
+
+    我们的 provider 抛 `RuntimeError` 时，消息本身就是写给人看的
+    （「模型接口拒绝了这个令牌（401）…」）。再套一层 `RuntimeError: ` 前缀，
+    用户会以为是程序崩了，而不是「我 key 填错了」。
+    ⇒ 只有消息为空、或不是我们自己抛的那类异常，才带上类名。
+    """
+    msg = str(exc).strip()
+    if not msg:
+        return type(exc).__name__
+    if isinstance(exc, RuntimeError):
+        return msg
+    return f"{type(exc).__name__}: {msg}"
+
+
+def _scrub(msg: str) -> str:
+    """把错误信息里的 key 换成 ***。"""
+    out = msg[:240]
+    try:
+        from ..config import settings as _s
+
+        key = (_s.openai_api_key or "").strip()
+    except Exception:  # pragma: no cover
+        key = ""
+    if key and key in out:
+        out = out.replace(key, "***")
+    return out
+
+
 def _metered(provider: Any, repo: Repository) -> Any:
     """给应用实际在用的 provider 套上计量。
 
@@ -937,6 +1107,16 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # 界面里存过的模型配置优先于环境变量（重启后仍然生效）。
+        # 放在 provider 装配之前：否则「上次保存过 key」这件事只有本次进程记得。
+        if llm is None:
+            try:
+                from ..llm.settings_store import apply_to_settings
+
+                apply_to_settings()
+            except Exception:  # noqa: BLE001 - 配置文件坏了不该让服务起不来
+                pass
+
         # provider 在装配时就定下来，并挂在 app.state 上：
         # `/v1/llm/health` 要读它的熔断状态与最近一次调用的观测数据，
         # 而 Orchestrator 只认 LLMProvider 协议（韧性与观测都在协议之外）。
@@ -1192,6 +1372,104 @@ def create_app(
         since = window_start(window)
         records = repo.usage_since(since)
         return build_report(records, days=window)
+
+    # ------------------------------------------------------------------ #
+    # 模型配置（界面里绑定 key，免去改环境变量重启）
+    # ------------------------------------------------------------------ #
+    @app.get("/v1/settings/llm")
+    def get_llm_settings(request: Request) -> dict[str, Any]:
+        """当前实际生效的模型配置。**永远不返回完整 key**。"""
+        _require_local(request)
+        from ..llm import settings_store as store
+
+        return {
+            "effective": store.effective(),
+            "file": str(store.settings_path()),
+            "writable": True,
+        }
+
+    @app.put("/v1/settings/llm")
+    def put_llm_settings(body: LLMSettingsRequest, request: Request) -> dict[str, Any]:
+        """保存并**立即生效**（热切换，不用重启）。
+
+        保存前先用新配置真试一次：配置错（key 无效 / base_url 打不通）时
+        直接 400 并把原因带回来，而不是「存进去了但一聊天就报错」。
+        试失败**不写入文件**——避免把坏配置留在磁盘上，下次启动又踩一遍。
+        """
+        _require_local(request)
+        from ..llm import settings_store as store
+
+        old = store.load()
+        cfg = store.LLMSettings(
+            provider=(body.provider or old.provider or "").strip(),
+            base_url=(body.base_url or old.base_url or "").strip(),
+            model=(body.model or old.model or "").strip(),
+            # 三态：None 保持、"" 清除、有值替换
+            api_key=(old.api_key if body.api_key is None else body.api_key.strip()),
+        )
+        if not cfg.provider:
+            raise HTTPException(status_code=400, detail="provider 不能为空（想回到免密钥就选 mock）")
+
+        # 先应用配置（只改内存），再试调；失败就回滚，不留坏文件
+        from ..config import settings as cfg_obj
+
+        snapshot = (
+            cfg_obj.llm_provider,
+            cfg_obj.openai_base_url,
+            cfg_obj.openai_model,
+            cfg_obj.openai_api_key,
+        )
+        cfg_obj.llm_provider = cfg.provider
+        cfg_obj.openai_base_url = cfg.base_url or cfg_obj.openai_base_url
+        cfg_obj.openai_model = cfg.model or cfg_obj.openai_model
+        if cfg.api_key:
+            cfg_obj.openai_api_key = cfg.api_key
+        elif body.api_key == "":
+            cfg_obj.openai_api_key = ""
+
+        try:
+            _reload_llm(app)
+        except Exception as exc:  # noqa: BLE001 - 配置坏掉要让用户看到原因
+            cfg_obj.llm_provider, cfg_obj.openai_base_url, cfg_obj.openai_model, cfg_obj.openai_api_key = snapshot
+            _reload_llm(app)
+            raise HTTPException(status_code=400, detail=f"模型装配失败：{exc}") from exc
+
+        if cfg.provider != "mock":
+            probe = _probe_llm(app)
+            if not probe["ok"]:
+                # 回滚到旧配置（含磁盘），别把坏配置留下来
+                cfg_obj.llm_provider, cfg_obj.openai_base_url, cfg_obj.openai_model, cfg_obj.openai_api_key = snapshot
+                _reload_llm(app)
+                if old.provider:
+                    store.save(old)
+                else:
+                    store.clear()
+                raise HTTPException(status_code=400, detail=f"连不上：{probe['error']}")
+
+        store.save(cfg)
+        return {"saved": True, "effective": store.effective(), "probe": _probe_llm(app)}
+
+    @app.delete("/v1/settings/llm")
+    def delete_llm_settings(request: Request) -> dict[str, Any]:
+        """清掉文件里的配置，回到「环境变量 / 默认 mock」。"""
+        _require_local(request)
+        from ..config import settings as cfg_obj
+        from ..llm import settings_store as store
+
+        store.clear()
+        # 环境变量是底线：没有环境变量就回 mock
+        cfg_obj.llm_provider = (os.environ.get("LINGER_LLM") or "mock").strip() or "mock"
+        cfg_obj.openai_base_url = (os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").strip()
+        cfg_obj.openai_api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+        cfg_obj.openai_model = (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
+        _reload_llm(app)
+        return {"cleared": True, "effective": store.effective()}
+
+    @app.post("/v1/settings/llm/test")
+    def test_llm_settings(request: Request) -> dict[str, Any]:
+        """用当前生效的模型试一句话，把连通性/延迟摊开给用户看。"""
+        _require_local(request)
+        return _probe_llm(app)
 
     # ------------------------------------------------------------------ #
     # 场景（剧本）
