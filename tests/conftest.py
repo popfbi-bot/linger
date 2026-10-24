@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -21,6 +22,20 @@ from _fakes import FakeEmbedder  # noqa: E402,F401
 from linger.memory.embedding import HashEmbedder  # noqa: E402
 from linger.models import PersonaCard  # noqa: E402
 from linger.storage.sqlite import SQLiteRepository  # noqa: E402
+
+# --------------------------------------------------------------------------- #
+# Node 可用性（前端判据靠 node 跑真 app.js，见 tests/js/）
+# --------------------------------------------------------------------------- #
+# 为什么放 conftest：之前 test_market_frontend.py 自己定义一份、test_scenario_edit_frontend.py
+# 一份都没有——于是 CI 镜像（`python:3.11-slim`，没 node）里**全量红**，而本地绿。
+# 同一类依赖只留一个判据，才不会一边跳过一边炸。
+#
+# ⚠️ 跳过**不是**解决办法：`.cnb.yml` 的 install stage 现在会装 nodejs，
+# 所以 CI 上这些判据是真跑的。**跳过数从 9 涨上去就是「装漏了」的信号**
+# ——9 是本地无 psycopg 时的既定跳过数。
+HAS_NODE = shutil.which("node") is not None
+needs_node = pytest.mark.skipif(not HAS_NODE, reason="需要 node 跑真实前端脚本")
+
 
 # --------------------------------------------------------------------------- #
 # 读不出中文文件名的环境（验收用）

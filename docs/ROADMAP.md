@@ -839,6 +839,32 @@ CI 环境差异已逐项分析（Linux vs Windows、Python 3.11 vs 3.13 语法�
 ⇒ **待确认**：之后若拿到 CNB 的 pipeline 查询方式（或 Web 控制台看一眼），
 把 #34~#39 各提交的 CI 结果补记在此。在此之前，**不要声称「CI 已验证」**。
 
+### 补充（2026-10-24 21:40）：空白被填了一半，而且「理论上应当绿」是错的
+
+上面那段推断里，我逐项比对了 Linux vs Windows、Python 3.11 vs 3.13、无 psycopg
+——**漏了最要命的一项：node**。
+
+NPC 的 PR #40（`feat/market-frontend`）上带着两个 CI 修复提交，其中一条查到：
+
+> `test_beat_roundtrip` **从 #31 起在 CI 里一直是红的**。`.cnb.yml` 的镜像是
+> `python:3.11-slim`，没有 node，而它裸起 `subprocess` → `FileNotFoundError`。
+> 本地有 node 所以全绿，面向 main 的 PR 一直没跑到它，于是没人发现。
+
+**所以「本地绿 ⇒ CI 大概也绿」这条推断，在只知道三种差异的情况下就是猜。**
+漏掉的那个差异不在语言/平台上，在**测试依赖的可执行文件**上——`tests/js/`
+的那一堆判据是「用 node 跑真 app.js」，没有 node 就整片炸。
+
+修法不是跳过，是**把执行环境补上**（`.cnb.yml` install stage 装 `nodejs`），
+`needs_node` 只做本地兜底。配套立了一条判据：
+
+> **跳过数基线是 9。它涨上去就是「node 装漏了」的信号**，不是正常波动。
+
+本窗口实测：屏蔽 node 后跑那两个前端测试文件 → `25 passed, 6 skipped, 0 error`
+（6 + 9 = 15，与 NPC 说的数字一致）；不屏蔽 → `1022 passed, 9 skipped`。
+
+**仍未知的**：pipeline 跑没跑、绿没绿。但「至少有一个已知红点」这件事已经从
+「不知道」变成「找到并修了」——这比一句「理论上应该绿」值钱。
+
 ## ✅ M4 收口后的端到端复验（2026-10-24 夜，真 uvicorn + 真 HTTP）
 
 不是 TestClient，是 `uvicorn` 起真服务器、用 urllib 发真请求，14 项全过：

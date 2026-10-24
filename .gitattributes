@@ -1,0 +1,28 @@
+# 全仓库统一 LF。
+#
+# 为什么这条规矩值得单独立一个文件：本项目在 Windows 上**已经三次**被
+# 「文本模式写文件把 LF 翻成 CRLF」咬到——
+#   1. 变异脚本 `write_text()` 写回 `llm/mock.py` → 226 行伪变；
+#   2. 改 `server/app.py`、`static/index.html`、`README.md` → 2525/558/267 行伪变；
+#   3. `docs/ROADMAP.md` 被翻成 CRLF 后才提交，之后每次编辑都整文件伪变（840 行）。
+#
+# 每次的症状都一样：`git diff` 一片红，真正的改动只有几行，而
+# 「严格行数」与「忽略 CR 行数」不等就是唯一可靠的判据。
+#
+# `eol=lf` 让它从根上不发生：入库统一 LF，工作区里谁用什么工具写都不影响历史。
+# 提交前的判据仍然保留（两个数必须相等），因为「配置生效」和「这次真的没变」是两回事。
+* text=auto eol=lf
+
+# 二进制文件不做换行转换（`text=auto` 一般能识别，显式声明是为了不靠猜）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.wav binary
+*.mp3 binary
+*.pdf binary
+*.gz binary
+*.bundle binary
+*.db binary

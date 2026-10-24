@@ -11,7 +11,10 @@
 # 3. 测试免密钥免网络：LINGER_LLM 默认即 mock，这里显式写死防串味；
 #    OPENAI_API_KEY 不注入，CI 永不调真实 LLM。
 # 4. `python -m pytest -q -ra`：-ra 让失败时打印 FAILED 用例名摘要，
-#    -q 又不会把 661 条通过用例全刷屏。
+#    -q 又不会把 1000+ 条通过用例全刷屏。
+# 4b. **装 nodejs（见 install stage）**：前端判据是「用 node 跑真 app.js」，
+#    不装就得跳过——那是把最该守的判据跳过。`needs_node` 只是本地无 node 的兜底；
+#    CI 上装了 node，所以**跳过数从 9 涨上去就说明装漏了**。
 #
 # --- 评测 stage（M4-E / issue #37）---
 # 5. `evals` 是**独立 stage**，排在 test 之后。理由：它回答的是另一个问题。
@@ -42,8 +45,15 @@
         - python -V
         - python -m pip install --upgrade pip
         - python -m pip install -e ".[dev]"
-        # 装完立刻验一遍关键依赖能否 import —— 装不上就在这一 Stage 红
+        # 前端判据要 node：tests/js/ 与 test_*_frontend.py 是**用 node 跑真 app.js**
+        # 的，grep 证明不了「函数被调用」。slim 没 node，以前这里就红过
+        # （test_beat_roundtrip 从 #31 起在 CI 里一直红，本地有 node 所以没人发现）。
+        # apt 源里的 nodejs 够用：我们不构建、不装 npm 包，只用 `node -e` 跑切出来的函数。
+        - apt-get update && apt-get install -y --no-install-recommends nodejs && rm -rf /var/lib/apt/lists/*
+        # 装完立刻验一遍关键依赖能否 import / 可执行 —— 装不上就在这一 Stage 红，
+        # 不要等到 test Stage 跑 3 分钟才因为少个 node 红
         - python -c "import fastapi, pydantic, httpx, yaml, pytest; print('deps ok')"
+        - node -v
     - name: test
       script:
         - python -m pytest -q -ra

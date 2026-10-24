@@ -24,12 +24,12 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 from _fakes import FakeEmbedder, FakeLLM
+from conftest import needs_node
 from fastapi.testclient import TestClient
 
 from linger.market.models import STATUS_APPROVED, MarketListing
@@ -45,8 +45,6 @@ STATIC = Path(__file__).resolve().parent.parent / "src" / "linger" / "server" / 
 APP_JS = STATIC / "app.js"
 HARNESS = Path(__file__).resolve().parent / "js" / "persona_cards_harness.js"
 
-NODE = shutil.which("node")
-needs_node = pytest.mark.skipif(NODE is None, reason="需要 node 跑真实前端脚本")
 
 
 # --------------------------------------------------------------------------- #
@@ -105,7 +103,7 @@ def _run_frontend(payload: dict) -> dict:
     """把真实 app.js 交给 node 跑一遍，返回它在假 DOM 上造出来的卡片与按钮。"""
     full = {"app_js": str(APP_JS), **payload}
     proc = subprocess.run(
-        [NODE, str(HARNESS)],
+        ["node", str(HARNESS)],
         input=json.dumps(full),
         capture_output=True,
         text=True,

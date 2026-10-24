@@ -18,6 +18,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import needs_node
 
 STATIC = Path(__file__).resolve().parent.parent / "src" / "linger" / "server" / "static"
 JS = (STATIC / "app.js").read_text(encoding="utf-8")
@@ -101,11 +102,20 @@ def test_exit_edit_restores_create_mode():
 # --------------------------------------------------------------------------- #
 # 3. 往返一致：beatToLine ∘ lineToBeat = id
 # --------------------------------------------------------------------------- #
+@needs_node
 def test_beat_roundtrip():
     """表单一行 ↔ 节拍一个，往返后信息不丢。
 
     用 Node 跑真函数（锚点切出来拼最小环境），不 grep 文本——
     grep 证明不了「往返一致」这种行为判据。
+
+    ⚠️ **这条从 #31 起在 CI 里一直是红的**：`.cnb.yml` 的镜像是
+    `python:3.11-slim`，没有 node，而这里裸起 subprocess → FileNotFoundError。
+    本地有 node 所以全绿，面向 main 的 PR 一直没跑到它，于是没人发现。
+
+    跳过判据来自 conftest 的 `needs_node`（与 test_market_frontend 同一份）。
+    但**跳过不是修法**：`.cnb.yml` 现在会装 nodejs，所以它在 CI 上真跑。
+    **跳过数从 9 涨到 15 就是「node 装漏了」的信号**——别当成正常。
     """
     a = _fn("beatToLine")
     b = _fn("lineToBeat")
