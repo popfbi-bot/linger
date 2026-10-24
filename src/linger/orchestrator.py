@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 
 from .affect.engine import expression_hints, step
-from .affect.evaluator import evaluate, is_deep_turn, is_self_disclosure
+from .affect.event_model import EventJudge, Verdict
 from .companion import update_profile as update_companion_profile
 from .compose.compiler import compose, estimate_tokens
 from .config import settings
@@ -109,6 +109,7 @@ class Orchestrator:
         redflag_detector: RedFlagDetector | None = None,
         toxic_detector: ToxicSignalDetector | None = None,
         role_knowledge: RelationRoleKnowledge | None = None,
+        event_judge: EventJudge | None = None,
     ) -> None:
         self.repo = repo
         self.llm = llm
@@ -121,6 +122,11 @@ class Orchestrator:
         self.redflag_detector = redflag_detector or get_detector()
         self.toxic_detector = toxic_detector or get_toxic_detector()
         self.role_knowledge = role_knowledge or get_roles()
+        # 事件评估（#38）：只造一个不装模型的判官，`is_deep` 就是原来的规则。
+        # 想要模型优先，显式注入；`server/app.py` 按配置注入装好模型的单例。
+        # 不在这里自己 `get_event_judge()`：那会让「跑一个单测」顺手起一个
+        # 模型客户端（还可能带上宿主机的环境变量），测试与被测代码该解耦。
+        self.event_judge = event_judge or EventJudge()
 
     # ------------------------------------------------------------------ #
     # 会话
@@ -279,6 +285,7 @@ class Orchestrator:
                 "red_flags": state.red_flags,
                 "toxic_signals": state.toxic_signals,
                 "roles": state.roles,
+                "eval": state.eval_trace,
                 "companion": companion.model_dump(mode="json"),
                 "scenario": scenario_state,
             },
@@ -325,7 +332,7 @@ class Orchestrator:
             recall_future = pool.submit(self._recall, content, query_vec, memories)
             state_future = pool.submit(self._update_state, persona, affect_before, relation_before, content)
             recall = recall_future.result()
-            affect_after, relation_after, impacts, red_flags, toxic_signals, roles = state_future.result()
+            affect_after, relation_after, verdict, red_flags, toxic_signals, roles = state_future.result()
 
         # 开场旁白只在第一轮注入：此后它已经是历史，再讲一遍就是复读。
         # `history` 里已经包含本轮的 user turn，所以「第一轮」= 只有这一条。
@@ -349,7 +356,8 @@ class Orchestrator:
             affect=affect_after,
             relation=relation_after,
             affect_before=affect_before,
-            impacts=impacts,
+            impacts=verdict.impacts,
+            eval_trace=verdict.trace(),
             red_flags=red_flags,
             toxic_signals=toxic_signals,
             roles=roles,
@@ -379,8 +387,9 @@ class Orchestrator:
         affect_before: AffectState,
         relation_before: RelationState,
         content: str,
-    ) -> tuple[AffectState, RelationState, list, list[str], list[dict], list[dict]]:
-        impacts = evaluate(content)
+    ) -> tuple[AffectState, RelationState, Verdict, list[str], list[dict], list[dict]]:
+        verdict = self.event_judge.evaluate(content)
+        impacts = verdict.impacts
         affect_after = step(
             affect_before,
             persona.affect.baseline,
@@ -404,12 +413,12 @@ class Orchestrator:
         ]
         relation_after = tick(
             relation_before.model_copy(deep=True),
-            is_deep=is_deep_turn(content),
-            disclosed=is_self_disclosure(content),
+            is_deep=verdict.is_deep,
+            disclosed=verdict.is_self_disclosure,
             resonated=affect_after.pad.distance(affect_before.pad) >= 0.1,
             conflict=bool(red_flags),
         )
-        return affect_after, relation_after, impacts, [h.brief for h in red_flags], toxic_signals, roles
+        return affect_after, relation_after, verdict, [h.brief for h in red_flags], toxic_signals, roles
 
     def _history_messages(self, turns: list[Turn]) -> list[dict[str, str]]:
         return [{"role": t.role, "content": t.content} for t in turns if t.role in ("user", "assistant")]
@@ -481,6 +490,7 @@ class Orchestrator:
             affect_before=state.affect_before.pad.model_dump(),
             affect_after=state.affect.pad.model_dump(),
             impacts=[i.model_dump() for i in state.impacts],
+            eval=state.eval_trace,
             relation={
                 "level": state.relation.level,
                 "intimacy": state.relation.intimacy,

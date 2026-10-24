@@ -275,6 +275,9 @@ class TraceRecord(BaseModel):
     affect_before: dict[str, float] = Field(default_factory=dict)
     affect_after: dict[str, float] = Field(default_factory=dict)
     impacts: list[dict[str, Any]] = Field(default_factory=list)
+    # 这一轮走的是模型还是规则、以及模型给的理由（#38 判据 4/5）。
+    # 没有它，「模型在工作」与「一直静默走兜底」在事后无法区分。
+    eval: dict[str, Any] = Field(default_factory=dict)
     relation: dict[str, Any] = Field(default_factory=dict)
     tokens_by_block: dict[str, int] = Field(default_factory=dict)
     prompt: str = ""

@@ -97,6 +97,59 @@ _MOCK_DIARY = (
 )
 
 
+# --------------------------------------------------------------------------- #
+# 事件评估（#38）：mock 也得会答，否则开了 LINGER_LLM_EVAL 的演示/评测
+# 每一轮都走兜底——那等于没接线，而且看起来「模型上线了」是个假象。
+# --------------------------------------------------------------------------- #
+# 规则故意与 `affect/evaluator.py::_NEG_EVENT` **不同**：那份词表小得连
+# 「房贷」「加班」「撂挑子」都不认识，正是 #38 要修的东西。mock 在这里多认
+# 几个词，是为了让「模型优先」这条路在免密钥环境下真的能改变结论
+# （否则评测跑一万遍也测不出接线有没有生效）。
+_DEEP_HINTS = (
+    "房贷", "加班", "撂挑子", "撑不住", "离婚", "住院", "裁员", "吵", "冷战",
+    "我妈", "我爸", "我家里", "睡不着", "喘不过", "后悔", "没意思", "想哭",
+)
+_SHALLOW_HINTS = ("在吗", "随便", "嗯", "哦", "晚安", "今天天气", "吃什么")
+_FAMILY_HINTS = ("我妈", "我爸", "我老婆", "我老公", "我家里", "我身体", "结婚")
+_NEGLECT_TICS = ("算了", "说了你也不懂", "随便")
+_WITHDRAW_HINTS = ("说了你也不懂", "没人懂", "不想说了")
+_PRAISE_HINTS = ("你真好", "谢谢你", "喜欢你", "懂我")
+_INTIMACY_HINTS = ("想你", "抱抱", "在吗", "陪我")
+
+
+def _mock_event_reply(user: str) -> str:
+    """确定性、可编排的事件评估产出（形状与真模型约定的 JSON 一致）。
+
+    刻意保持确定性：评测要可复现，mock 不能靠随机数装作模型。
+    """
+    import json
+
+    t = (user or "").strip()
+    deep = len(t) > 60 or any(w in t for w in _DEEP_HINTS)
+    if any(w in t for w in _SHALLOW_HINTS) and len(t) <= 4:
+        deep = False
+    # 「说了你也不懂」不是深谈，但它**透露了他自己的处境**（觉得不被理解），
+    # 所以 disclosure 仍然成立——这两个字段本来就不是一件事。
+    disclosure = deep or any(w in t for w in _FAMILY_HINTS + _WITHDRAW_HINTS)
+    if any(w in t for w in _NEGLECT_TICS):
+        kind = "neglect"
+    elif any(w in t for w in _PRAISE_HINTS):
+        kind = "praise"
+    elif any(w in t for w in _INTIMACY_HINTS):
+        kind = "intimacy"
+    else:
+        kind = "event"
+    return json.dumps(
+        {
+            "kind": kind,
+            "is_deep": deep,
+            "is_self_disclosure": disclosure,
+            "reason": "mock：命中长期消耗/家庭处境" if deep else "mock：日常陈述或简短应答",
+        },
+        ensure_ascii=False,
+    )
+
+
 def _first_question(user: str) -> str | None:
     for line in user.replace("？", "?").split("?"):
         if line.strip():
@@ -146,9 +199,20 @@ class MockProvider:
     ) -> Iterator[str]:
         # 人格生成请求走固定产出（M3-A）。延迟导入：generator 在 persona 包里，
         # 包级导入会形成 llm → persona → ... 的回环。
+        from ..affect.event_model import EVAL_MARKER
         from ..diary.flow import DIARY_MARKER
         from ..distill.compose import DISTILL_MARKER
         from ..persona.generator import GENERATE_MARKER, PREVIEW_MARKER
+
+        # 事件评估（#38）：只答一个 JSON 布尔，不带任何解释——
+        # 真实小模型会照提示词做，mock 也跟着做，否则解析层的
+        # 「模型爱加围栏」那条分支就永远没被正向覆盖过。
+        if EVAL_MARKER in system:
+            user = next(
+                (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), ""
+            )
+            yield from chunks(_mock_event_reply(user), size=8)
+            return
 
         # 聊天记录蒸馏（M3-E）：只返回 meta/traits/values，不含 voice
         if DISTILL_MARKER in system:
