@@ -1,0 +1,100 @@
+# 灵犀 Linger —— CI 护栏（GitHub Actions 版）
+#
+# 这份是从 `.cnb.yml` 翻过来的（CNB 那边继续保留，两边并行）。
+# 逐项对应关系：
+#
+# | .cnb.yml 的做法                    | 这里                                |
+# |------------------------------------|-------------------------------------|
+# | docker image: python:3.11-slim     | actions/setup-python 3.11 + ubuntu  |
+# | stages: install / test / evals     | steps：装依赖 / 验证依赖 / 测试 / 评测 |
+# | apt-get install nodejs             | actions/setup-node                  |
+# | env LINGER_LLM: mock               | job 级 env（同样显式钉住）           |
+#
+# ## 为什么是三段 step 而不是三个 job
+#
+# CNB 的 stage 在同一个环境里顺序执行，所以「装依赖 / 测试 / 评测」天然共享依赖。
+# GitHub 的 job 是**独立 runner**，拆成三个 job 就要重复装三遍依赖（各 1~2 分钟）。
+# 而原来拆 stage 的目的是「红的时候一眼看出是哪一类问题」——
+# **step 名同样能做到这件事**（失败的那一步会高亮）。
+# ⇒ 一个 job、四段 step：既保留可读性，又不重复装环境。
+#
+# ## 两条不能动的地方
+#
+# 1. **必须装 node**。前端判据是「用 node 跑真 app.js」，不装就得跳过——
+#    那是把最该守的判据跳过。`needs_node` 只是本地无 node 的兜底；
+#    CI 上装了 node，所以**跳过数涨上去就说明装漏了**。
+# 2. **评测不做成「只提示」**。非 0 退出就是构建失败。只提示的评测等于没有：
+#    没人会去看一条不会拦人的日志。
+#
+# 本地等价命令：python -m pytest -q && python -m evals.run
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 只读权限：CI 不需要写仓库
+permissions:
+  contents: read
+
+# 同一个分支连续推两次，取消前一次——省额度也省等待
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 测试与评测
+    runs-on: ubuntu-latest
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      # 显式钉住 mock：不依赖外部 LLM，也不会因环境变量误设而联网。
+      # 需要真实模型的用例在缺 key 时走 skip（「skip 不是 error」是红线，
+      # 否则这一步会永远红）。
+      LINGER_LLM: mock
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@v4
+
+      - name: 装 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # 前端判据要 node：tests/js/ 与 tests/test_*_frontend.py 是**用 node 跑真
+      # app.js** 的，grep 证明不了「函数被调用」。早先 CI 上就是因为少 node
+      # 让一条判据长期红，而本地有 node 所以没人发现。
+      # 只跑 `node -e`，不构建、不装 npm 包，所以不需要 npm ci。
+      - name: 装 node（前端判据要用）
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 装依赖
+        run: |
+          python -V
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # 装完立刻验一遍关键依赖能否 import / 可执行：
+      # 装不上就在这一步红，不要等跑 5 分钟测试才因为少个 node 红。
+      - name: 验证依赖
+        run: |
+          python -c "import fastapi, pydantic, httpx, yaml, pytest; print('deps ok')"
+          node -v
+
+      # -ra 让失败时打印 FAILED 用例名摘要，-q 又不会把 1000+ 条通过用例全刷屏
+      - name: 跑全量测试
+        run: python -m pytest -q -ra
+
+      # 独立一层：单测问「代码对不对」，这里问「味道对不对」。
+      # 红了先读报告里的「类别分 + 挂掉的判据名」，再读 evals/README.md。
+      - name: 跑人格评测
+        run: python -m evals.run
