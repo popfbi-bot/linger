@@ -1,5 +1,7 @@
 # 灵犀 Linger
 
+[![CI](https://github.com/popfbi-bot/linger/actions/workflows/ci.yml/badge.svg)](https://github.com/popfbi-bot/linger/actions/workflows/ci.yml)
+
 **一个给 AI 的状态引擎——让人格、情绪、记忆、关系四件事真正活起来，而不是每次对话都从零开始。**
 
 一键赋予 AI 一个角色（人格卡 + 场景剧本 + 关系档案），它就有了**记性**、**脾气**、**分寸**，能陪你聊下去。
