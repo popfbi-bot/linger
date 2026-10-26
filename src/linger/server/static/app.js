@@ -4,7 +4,7 @@
  * 所以这里用 fetch + ReadableStream 手动解析 SSE 帧。代价是要自己处理
  * 「一个 chunk 把事件切成两半」的情况——下面的 parseSSE 就是干这个的。
  *
- * 三条前端契约（对应 docs/ROADMAP.md M1.5 A 组）：
+ * 三条前端契约（对应前端验收判据）：
  *   1. affect 到达 → 情绪指示器的文字与颜色都变（不只是 console.log）
  *   2. delta 到达   → 文本逐段追加（不是等 done 一次性刷出来）
  *   3. done 到达    → 记忆面板与 trace 面板自动刷新
